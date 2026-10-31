@@ -404,7 +404,7 @@ def _stage_server() -> None:
           and {"max_depth", "limit"} <= set(tools["find_instances"].input_schema["properties"])
           and {"max_depth", "limit"} <= set(tools["signal_fanin"].input_schema["properties"])
           and {"max_depth", "limit"} <= set(tools["signal_downstream"].input_schema["properties"]))
-    check("tool count still 37", len(tools) == 37, str(len(tools)))
+    check("tool count still 39", len(tools) == 39, str(len(tools)))
     hint = srv.param_rename_hint(TypeError("got an unexpected keyword argument 'transitive'"),
                                  "signal_fanin")
     check("transitive gets a rename hint pointing at max_depth",

@@ -5,6 +5,10 @@ include LICENSE
 include docs/THIRD_PARTY.md
 include docs/PACKAGING_MATERIALS.md
 include docs/FSDB_GUIDE.md
+include docs/SHM_GUIDE.md
+include docs/VWDB_GUIDE.md
+include docs/SHM_GUIDE.en.md
+include docs/VWDB_GUIDE.en.md
 include docs/WAVE_VIEWER.md
 include docs/WAVE_VIEWER.en.md
 include docs/XCELIUM_FST_GUIDE.md

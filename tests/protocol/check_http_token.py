@@ -109,7 +109,7 @@ async def run(port: int, session_root: str, tmp: str) -> None:
         async with ClientSession(r, w) as cs:
             await cs.initialize()
             tools = {t.name for t in (await cs.list_tools()).tools}
-            check("37 tools over authenticated HTTP", len(tools) == 37, str(len(tools)))
+            check("39 tools over authenticated HTTP", len(tools) == 39, str(len(tools)))
             o, _, _ = await _call(cs, "open_session", {"session_path": SAMPLE})
             check("open_session works", bool(o.get("session_id")), str(o)[:160])
             ls, _, _ = await _call(cs, "session_info", {"list_sessions": True})

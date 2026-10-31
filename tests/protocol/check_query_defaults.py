@@ -40,7 +40,7 @@ async def main() -> int:
             await cs.initialize()
             tools = {t.name: t for t in (await cs.list_tools()).tools}
             print("== registered tool names ==")
-            check("tool count is 37", len(tools) == 37, str(len(tools)))
+            check("tool count is 39", len(tools) == 39, str(len(tools)))
             for name in ("query_defaults_set", "query_defaults_get",
                          "query_defaults_clear"):
                 check(f"{name} is listed", name in tools)

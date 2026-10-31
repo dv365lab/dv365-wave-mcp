@@ -329,7 +329,7 @@ Open Source Software Licensed under the GPL-3.0-only in the release package as m
 1. fstdumper Xcelium 修复补丁（本仓库）
 Copyright (C) 2026 Tencent.  All rights reserved.
 Please note this software has been modified by  Tencent in this distribution.
-You may find the original code here: https://github.com/Tencent/wave-mcp/tree/main/third_party/fstdumper
+You may find the original code in the third_party/fstdumper directory of this repository.
 Terms of the GPL-3.0-only:
 --------------------------------------------------------------------
 

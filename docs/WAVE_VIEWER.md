@@ -79,7 +79,7 @@ wave-view sim.vcd
 
 转出的 FST 放在原波形旁边（`dump.vcd` → `dump.fst`），和 `prepare_session` 共用同一份：同一个波形不管是先分析后看图，还是先看图后分析，都只转一次，手动转好放在旁边的也直接用。原波形目录不可写（例如只读的回归目录）时改放 `~/.wave-mcp/cache/fst/`（受 `WAVE_MCP_CACHE_ROOT` 影响），`open_wave_view` 会在 `warnings` 里说明。GB 级 FSDB 转换耗时以分钟计，直接复用则是秒级。
 
-`.fst` / `.vcd` / `.fsdb` 以外的格式（如 `.ghw`、`.vpd`、SHM 目录）会在入口直接报错并列出支持的扩展名，不会落到转换器里报一个指向错误方向的问题。
+`.fst` / `.vcd` / `.fsdb` / `.shm` / `.vwdb` 以外的格式（如 `.ghw`、`.vpd`）会在入口直接报错并列出支持的扩展名，不会落到转换器里报一个指向错误方向的问题。
 
 命令会打印三行信息：浏览器 URL、原生 Surfer 客户端连接方式（`surfer <token_url>`）、SSH 端口转发命令。桌面环境（有 `DISPLAY`）自动用 `xdg-open` 拉起浏览器；SSH / code agent 场景下 VS Code、Cursor 等 IDE 终端会自动转发 localhost 端口，直接点 URL 即可。进程前台常驻，Ctrl-C 退出并回收全部子进程。
 
@@ -122,7 +122,7 @@ open_wave_view({
 
 字段要点：
 
-- `fst_paths` 每项可以是 `.fst`、`.vcd` 或 `.fsdb`，最多两份（一份普通视图，两份对比视图）。FST 直接打开，VCD / FSDB 先转成 FST 再打开，转换产物带缓存并与 `prepare_session` 共用，所以分析阶段已经转过的波形在这里不会再转一遍。其他扩展名（`.ghw`、`.vpd`、SHM 目录等）在入口直接返回 `{"status": "error", "error_type": "unsupported_format", "error": …, "hint": …}` 并列出支持的格式。
+- `fst_paths` 每项可以是 `.fst`、`.vcd`、`.fsdb`、`.shm`（目录或其中的 `.trn` / `.dsn`，见 [SHM_GUIDE.md](SHM_GUIDE.md)）或 `.vwdb`（见 [VWDB_GUIDE.md](VWDB_GUIDE.md)），最多两份（一份普通视图，两份对比视图）。FST 直接打开，VCD / FSDB / SHM / VWDB 先转成 FST 再打开，转换产物带缓存并与 `prepare_session` 共用，所以分析阶段已经转过的波形在这里不会再转一遍。其他扩展名（`.ghw`、`.vpd` 等）在入口直接返回 `{"status": "error", "error_type": "unsupported_format", "error": …, "hint": …}` 并列出支持的格式。
 - `signals` 每项 `{path, color?, group?, format?, source?}`；对比视图里用 `source: "a"/"b"` 指定信号属于哪份波形，缺省两边都加。
 - `group` 建议用简短的 ASCII 词。分组标题画在 Surfer 的 WASM 画布里，字体不含 CJK 字形，写中文会显示成方块（分组本身照常生效）。名字里的空格会自动折成下划线，因为 sucl 解析器不接受带空格的参数，原样发过去整条分组标题会被静默丢弃。想写中文说明放到 `annotation` 里，那里不限语言。
 - `diff` 参数直接接 `diff_waveforms` 的结果引用 `{source_a, source_b, first_divergence}`（只认这三个字段），自动在首分歧时刻打红色 marker，不用手动换算；`first_divergence` 原样回填即可，`"85ns"` 这类带后缀的时间会被规范化。
@@ -361,4 +361,4 @@ view 的生命周期跟随打开它的进程。MCP server 重启后旧 view_id �
 
 ---
 
-反馈问题请到 [GitHub Issues](https://github.com/Tencent/wave-mcp/issues)。
+反馈问题请到 [GitHub Issues](https://github.com/dv365lab/dv365-wave-mcp/issues)。

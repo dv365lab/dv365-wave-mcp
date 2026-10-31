@@ -40,12 +40,12 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
         prog="wave-view",
         description="Open waveform(s) in the wave-mcp browser viewer "
-                    "(.fst directly, .vcd/.fsdb auto-converted to FST; "
+                    "(.fst directly, .vcd/.fsdb/.shm/.vwdb auto-converted to FST; "
                     "streamed via surver, tens-of-GB files open instantly).")
     ap.add_argument("fst", nargs="+", help="waveform path(s); two paths "
-                    "open a comparison view. .fst opens directly, .vcd and "
-                    ".fsdb are converted to FST (cached, shared with "
-                    "prepare_session)")
+                    "open a comparison view. .fst opens directly, .vcd, "
+                    ".fsdb, .shm and .vwdb are converted to FST (cached, shared "
+                    "with prepare_session)")
     ap.add_argument("--signals", nargs="*", default=None,
                     help="signal paths to add initially")
     ap.add_argument("--cursor", type=_parse_time, default=None,

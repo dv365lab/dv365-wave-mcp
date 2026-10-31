@@ -17,10 +17,10 @@ wave-mcp **不跑仿真器**，只消费仿真产出的波形（FST）+ RTL 源�
   实例数组、转义标识符的命名方式，换到新仿真器时按文末三步自查一遍；对不上也只会
   优雅降级，不会给出错误答案（见下）。
 
-## 四种波形接入方式
+## 六种波形接入方式
 
 wave-mcp 的唯一读取格式是 **FST**。其余格式都在进入 wave-mcp 之前先变成 FST，
-一共四条路：
+一共六条路：
 
 | 方式 | 定位 | 是否需要转换 | 需要什么 | 深度文档 |
 | --- | --- | --- | --- | --- |
@@ -28,9 +28,11 @@ wave-mcp 的唯一读取格式是 **FST**。其余格式都在进入 wave-mcp �
 | **② VCD 自动转换** | 通用兜底 | `prepare_session` 自动调 `vcd2fst` | GTKWave 的 `vcd2fst` | 本文 + [DEPLOY_AIRGAP.md](DEPLOY_AIRGAP.md) |
 | **③ FSDB 转换** | 存量商用波形 | `prepare_session` 自动调 `fsdb2fst`（带缓存） | Verdi 的 FsdbReader 运行库（不占 license） | [FSDB_GUIDE.md](FSDB_GUIDE.md) |
 | **④ Xcelium 直出** | Cadence 环境首选 | 不需要 | fstdumper VPI 插件（GPL-3.0，自行编译） | [XCELIUM_FST_GUIDE.md](XCELIUM_FST_GUIDE.md) |
+| **⑤ SHM 转换** | 存量 Cadence 波形 | `prepare_session` 自动调 `simvisdbutil` 导出 VCD 再 `vcd2fst`（带缓存） | Xcelium 自带的 `simvisdbutil` + `vcd2fst` | [SHM_GUIDE.md](SHM_GUIDE.md) |
+| **⑥ VWDB 转换** | 存量 Verisium Debug 波形 | `prepare_session` 自动调 `vwdb2vcd` 导出 VCD 再 `vcd2fst`（带缓存） | Xcelium / Verisium Debug 自带的 `vwdb2vcd` + `vcd2fst` | [VWDB_GUIDE.md](VWDB_GUIDE.md) |
 
 一句话口径：**FST 直读；VCD 自动转换；Verilator / Icarus / Xcelium(fstdumper)
-可从源头直出 FST；存量 FSDB 走 fsdb2fst 转换；SHM 不做**（Cadence 用户走 ④）。
+可从源头直出 FST；存量 FSDB 走 fsdb2fst 转换；存量 SHM / VWDB 走 simvisdbutil / vwdb2vcd 转换**（新仿真 Cadence 用户首选 ④）。
 
 ### 按仿真器查
 
@@ -38,7 +40,7 @@ wave-mcp 的唯一读取格式是 **FST**。其余格式都在进入 wave-mcp �
 | --- | --- | --- |
 | Verilator | ✅ `--trace-fst` | ① 零转换（最省事） |
 | Icarus (iverilog) | ✅ `-fst` | ① 零转换 |
-| Xcelium (xrun) | ✅ 加载 fstdumper VPI 插件 | ④ [直出 FST](XCELIUM_FST_GUIDE.md)；备选 ② VCD → `vcd2fst` |
+| Xcelium (xrun) | ✅ 加载 fstdumper VPI 插件 | ④ [直出 FST](XCELIUM_FST_GUIDE.md)；存量 SHM 走 ⑤ [simvisdbutil](SHM_GUIDE.md)、VWDB 走 ⑥ [vwdb2vcd](VWDB_GUIDE.md)；备选 ② VCD → `vcd2fst` |
 | VCS | ❌ | 存量 FSDB 走 ③ [fsdb2fst](FSDB_GUIDE.md)；否则 ② VCD → `vcd2fst`（VPD 需先 `vpd2vcd`） |
 | Questa / ModelSim | ❌ | ② VCD → `vcd2fst` |
 
@@ -49,7 +51,7 @@ wave-mcp 的唯一读取格式是 **FST**。其余格式都在进入 wave-mcp �
 
 ### ② VCD 自动转换
 
-`prepare_session` 传入非 `.fst`、非 `.fsdb` 的波形一律当 VCD 处理，自动调
+`prepare_session` 传入 `.vcd` 的波形按 VCD 处理，自动调
 `vcd2fst` 转换，转换记录在返回的 `steps` 里（`convert_vcd_to_fst`）。功能不受
 影响，只是多一次转换耗时与一份中间文件。转换与 FSDB 共用同一套缓存：产物落在
 `.vcd` 旁（目录不可写时回退到 session 目录），同一份 VCD 反复建 session 只转
@@ -88,6 +90,19 @@ clocking block、静态 task 局部变量和常用 SV 类型都能 dump；parame
 变量、unpacked 数组等仍然拿不到。完整流程、验证方法与适用范围见
 [XCELIUM_FST_GUIDE.md](XCELIUM_FST_GUIDE.md)。
 
+### ⑤ SHM 转换（simvisdbutil）
+
+手上已有的 SHM（`waves.shm/` 目录）可以直接传给 `prepare_session` / `open_wave_view`：
+用 Xcelium 自带的 `simvisdbutil` 导出临时 VCD，再由 `vcd2fst` 转成 FST，临时 VCD
+转完即删，产物 `waves.fst` 放在 `.shm` 目录旁并复用。SHM 展开成 VCD 会膨胀数倍，
+大数据库用 `scopes` / `signals_file` 只转需要的部分。详见 [SHM_GUIDE.md](SHM_GUIDE.md)。
+
+### ⑥ VWDB 转换（vwdb2vcd）
+
+Verisium Debug 的 VWDB（`*.vwdb` 目录，Xcelium 常写在 `waves.shm/waves_ida.vwdb`）同样直接传：
+用 Cadence 自带的 `vwdb2vcd` 导出临时 VCD，再由 `vcd2fst` 转成 FST，产物放在 `.vwdb`
+（或包着它的 `.shm`）目录旁并复用。详见 [VWDB_GUIDE.md](VWDB_GUIDE.md)。
+
 ## trace / 驱动的命门是"路径对齐"
 
 trace / 驱动能否 work，取决于 **FST 里的实例层次名**能否与 **pyslang 从 RTL 推出的
@@ -119,6 +134,8 @@ FST 路径：top_tb.U_DECODE.u_decode_unit   （根在仿真顶层）
 | Xcelium 直出 FST（fstdumper） | ✅ 支持 | 见下方已知限制 |
 | Xcelium / Icarus 的 VCD → FST | ✅ 支持 | |
 | FSDB → FST（fsdb2fst） | ✅ 支持 | Verdi V-2023.12 及以上 |
+| SHM → FST（simvisdbutil + vcd2fst） | ✅ 支持 | 已在 Xcelium 26.03 上验证 |
+| VWDB → FST（vwdb2vcd + vcd2fst） | ✅ 支持 | 已在 Xcelium 26.03 上验证 |
 | VCS 直接 dump | ⚠️ 未覆盖 | 存量 FSDB 走 fsdb2fst；或转 VCD |
 
 四态能力（X/Z 传播、三态总线、`trace_x` 因果回溯、多驱动冲突）有专项回归覆盖，

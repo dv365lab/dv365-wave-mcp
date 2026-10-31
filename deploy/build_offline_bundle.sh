@@ -319,7 +319,7 @@ cp -R "$LIC_SRC" "$OUT/src/docs/licenses"
 # a repository link, so the guides referenced from error messages have to be in
 # the bundle or the guidance is a dead end.
 mkdir -p "$OUT/docs"
-for guide in FSDB_GUIDE.md WAVE_VIEWER.md WAVE_VIEWER.en.md DEPLOY_AIRGAP.md \
+for guide in FSDB_GUIDE.md SHM_GUIDE.md SHM_GUIDE.en.md VWDB_GUIDE.md VWDB_GUIDE.en.md WAVE_VIEWER.md WAVE_VIEWER.en.md DEPLOY_AIRGAP.md \
              XCELIUM_FST_GUIDE.md SIMULATOR_COMPATIBILITY.md VIEWER_SCREENSHOTS.md; do
   [[ -f "$REPO_ROOT/docs/$guide" ]] && cp "$REPO_ROOT/docs/$guide" "$OUT/docs/$guide"
 done

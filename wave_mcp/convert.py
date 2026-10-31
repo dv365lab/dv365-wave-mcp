@@ -28,7 +28,15 @@ runtime is reachable (``$VERDI_HOME`` / ``$NOVAS_HOME`` / ``$FSDB2FST_FREADER``)
 the converter is **built on demand** into the user cache, so setting
 ``VERDI_HOME`` in the MCP config is the only setup step a user has to do.
 
-Both conversions share one placement rule (``cached_fst``): the FST lives
+It also converts **SHM** (Cadence Xcelium / SimVision ``.shm`` database)
+through Cadence's own ``simvisdbutil`` (shipped with Xcelium): the SHM is
+exported to a temporary VCD, which vcd2fst then turns into FST; the VCD is
+deleted afterwards. ``simvisdbutil`` is resolved through ``$SIMVISDBUTIL_BIN``
+-> PATH -> ``$XCELIUM_HOME`` / ``$CDS_INST_DIR`` / ``$XLM_ROOT`` ``tools/bin``.
+**VWDB** (Cadence Verisium waveform database, a ``.vwdb`` directory) goes the
+same way through Cadence's ``vwdb2vcd`` (``$VWDB2VCD_BIN`` or the same search).
+
+All conversions share one placement rule (``cached_fst``): the FST lives
 beside its source as ``<name>.fst`` and is reused from there, including one the
 user converted by hand, until the source changes. Partial conversions and
 unwritable source directories use the derived cache instead. FSDB files are
@@ -266,8 +274,12 @@ _STALL_LIMIT = 600.0         # no output growth for this long -> stuck
 # throughputs (MB per minute) for the auto-timeout estimate. Small inputs are
 # usually served from page cache / local SSD and run far faster, so they use a
 # loftier number than multi-GB files (where disk backpressure dominates).
-_THROUGHPUT_MB_PER_MIN = {"vcd": 200.0, "fsdb": 100.0}
-_SMALL_WAVE_THROUGHPUT_MB_PER_MIN = {"vcd": 600.0, "fsdb": 300.0}
+# SHM is a compact binary database exported to VCD first (several times its
+# own size) and then converted again, so its MB/min is the lowest.
+_THROUGHPUT_MB_PER_MIN = {"vcd": 200.0, "fsdb": 100.0, "shm": 40.0,
+                          "vwdb": 40.0}
+_SMALL_WAVE_THROUGHPUT_MB_PER_MIN = {"vcd": 600.0, "fsdb": 300.0,
+                                     "shm": 120.0, "vwdb": 120.0}
 _SMALL_WAVE_MB = 2048.0      # below this, the fast throughput applies
 _MIN_TIMEOUT = 300.0         # 5 minutes floor
 _MAX_TIMEOUT = 4 * 3600.0    # 4 hours cap
@@ -314,7 +326,7 @@ def _log_estimate(source_path: str, source_bytes: int, timeout: float,
 
 
 def _run_with_heartbeat(cmd: List[str], fst_path: str, timeout: float,
-                        kind: str) -> tuple:
+                        kind: str, cwd: Optional[str] = None) -> tuple:
     """Run one conversion command with liveness monitoring.
 
     Returns ``(returncode, combined_output)``. Raises ``ConversionError`` when
@@ -340,7 +352,8 @@ def _run_with_heartbeat(cmd: List[str], fst_path: str, timeout: float,
         # *and anything it forked*, and only those. Killing by group id never
         # reaches other converters or viewers on the host.
         proc = subprocess.Popen(cmd, stdout=buf, stderr=subprocess.STDOUT,
-                                stdin=subprocess.DEVNULL, start_new_session=True)
+                                stdin=subprocess.DEVNULL, start_new_session=True,
+                                cwd=cwd)
         _ACTIVE.add(proc)
         start = time.time()
         last_size = _bytes_of(fst_path)
@@ -482,7 +495,10 @@ def _default_out_path(source: str) -> str:
     target = beside_path(source)
     if _dir_writable(os.path.dirname(target)) is None:
         return target
-    kind = "fsdb" if source.lower().endswith(".fsdb") else "vcd"
+    try:
+        kind = waveform_kind(source)
+    except UnsupportedWaveformError:
+        kind = "vcd"
     opts = _opts_for(kind, default_pack(kind), None, None)
     cache_dir = storage.policy().cache_dir("fst", source,
                                            json.dumps(opts, sort_keys=True))
@@ -601,34 +617,214 @@ def _fsdb2fst_cache_dir(key: str) -> str:
 # Formats wave-mcp can open. An unknown extension is rejected BY NAME instead
 # of being handed to vcd2fst, whose parse error ("VCD not found" / rc=1 noise)
 # blames the wrong thing and hides the real problem: the format is unsupported.
-WAVEFORM_EXTENSIONS = (".fst", ".vcd", ".fsdb")
+WAVEFORM_EXTENSIONS = (".fst", ".vcd", ".fsdb", ".shm", ".vwdb")
+
+#: An SHM database is a ``<name>.shm`` directory holding ``<name>.trn`` (value
+#: changes) and ``<name>.dsn`` (design); either file also names the database.
+_SHM_SUFFIXES = (".shm", ".trn", ".dsn")
 
 
 class UnsupportedWaveformError(ValueError):
     """Raised when a waveform path is not a format wave-mcp can open."""
 
 
+def _is_shm_dir(path: str) -> bool:
+    """A directory holding an SHM database (``*.trn``), whatever its name."""
+    try:
+        return os.path.isdir(path) and any(
+            n.lower().endswith(".trn") for n in os.listdir(path))
+    except OSError:
+        return False
+
+
+#: Marker file at the root of every VWDB directory.
+_VWDB_MARKER = "vwdb_info.json"
+
+
+def _is_vwdb_dir(path: str) -> bool:
+    """A VWDB root directory, whatever its name (it holds vwdb_info.json)."""
+    return os.path.isfile(os.path.join(path, _VWDB_MARKER))
+
+
+def _vwdb_ancestor(path: str) -> Optional[str]:
+    """The enclosing ``*.vwdb`` / VWDB root of ``path`` (itself included)."""
+    cur = os.path.abspath(path)
+    while True:
+        if cur.lower().endswith(".vwdb") or (os.path.isdir(cur)
+                                             and _is_vwdb_dir(cur)):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return None
+        cur = parent
+
+
+def _vwdb_children(path: str) -> List[str]:
+    """VWDB databases directly inside ``path`` (e.g. a VWDB-only .shm dir)."""
+    try:
+        names = sorted(os.listdir(path))
+    except OSError:
+        return []
+    return [os.path.join(path, n) for n in names
+            if not n.startswith(".")
+            and os.path.isdir(os.path.join(path, n))
+            and (n.lower().endswith(".vwdb")
+                 or _is_vwdb_dir(os.path.join(path, n)))]
+
+
 def waveform_kind(path: str) -> str:
-    """Classify a waveform path by extension: ``fst`` / ``vcd`` / ``fsdb``.
+    """Classify a waveform path: ``fst`` / ``vcd`` / ``fsdb`` / ``shm`` /
+    ``vwdb``.
+
+    SHM is recognised by a ``.shm`` directory, its ``.trn`` / ``.dsn`` file,
+    or any directory that contains a ``.trn`` file. VWDB (Cadence Verisium
+    waveform database) by a ``.vwdb`` directory, any path inside one, a
+    directory holding ``vwdb_info.json``, or a ``.shm`` directory that holds
+    no ``.trn`` but a ``*.vwdb`` (VWDB-only dumping). A hybrid ``.shm``
+    holding both stays SHM; pass its ``*.vwdb`` to read the VWDB instead.
 
     Raises ``UnsupportedWaveformError`` naming the supported formats for
-    anything else (GHW, VPD, SHM, no extension, ...) rather than letting it
+    anything else (GHW, VPD, no extension, ...) rather than letting it
     fall through to the VCD converter and fail with a misleading message.
     """
-    lowered = str(path).lower()
+    lowered = str(path).lower().rstrip("/")
     if lowered.endswith(".fst"):
         return "fst"
     if lowered.endswith(".fsdb"):
         return "fsdb"
     if lowered.endswith(".vcd"):
         return "vcd"
-    ext = os.path.splitext(str(path))[1] or "(none)"
+    if _vwdb_ancestor(str(path)):
+        return "vwdb"
+    if lowered.endswith((".trn", ".dsn")) or _is_shm_dir(str(path)):
+        return "shm"
+    if os.path.isdir(str(path)) and _vwdb_children(str(path)):
+        return "vwdb"
+    if lowered.endswith(".shm"):
+        return "shm"
+    ext = os.path.splitext(str(path).rstrip("/"))[1] or "(none)"
     raise UnsupportedWaveformError(
         f"unsupported waveform format: {path} (extension {ext!r}). "
         f"Supported: {', '.join(WAVEFORM_EXTENSIONS)} — .fst is read "
-        f"directly, .vcd and .fsdb are converted to FST automatically. "
-        f"Convert this file to one of those first, e.g. with the tool that "
-        f"produced it (gtkwave / simvision / fsdb2vcd).")
+        f"directly, .vcd / .fsdb / .shm / .vwdb are converted to FST "
+        f"automatically. Convert this file to one of those first, e.g. with "
+        f"the tool that produced it (gtkwave / simvisdbutil / vwdb2vcd / "
+        f"fsdb2vcd).")
+
+
+def shm_database(path: str) -> str:
+    """Canonical path of an SHM database: the ``.shm`` directory.
+
+    ``waves.shm/waves.trn`` and ``waves.shm/waves.dsn`` both name
+    ``waves.shm``, so they share one converted FST (``waves.fst`` beside the
+    directory). A loose ``.trn`` outside a directory names itself.
+    """
+    path = os.path.abspath(str(path))
+    if path.lower().endswith((".trn", ".dsn")):
+        parent = os.path.dirname(path)
+        if os.path.isdir(parent) and parent.lower().endswith(".shm"):
+            return parent
+        if path.lower().endswith(".dsn"):
+            # simvisdbutil reads the database through its .trn
+            return os.path.splitext(path)[0] + ".trn"
+    return path
+
+
+def vwdb_database(path: str) -> str:
+    """Canonical path of a VWDB database: its root directory.
+
+    Any path inside it (``x.vwdb/vwdb_info.json``, ``x.vwdb/trn_0_0``) names
+    the database; a VWDB-only ``.shm`` directory names the one ``*.vwdb``
+    inside it. Raises ``UnsupportedWaveformError`` when that is ambiguous.
+    """
+    path = os.path.abspath(str(path))
+    found = _vwdb_ancestor(path)
+    if found:
+        return found
+    children = _vwdb_children(path)
+    if len(children) == 1:
+        return children[0]
+    if len(children) > 1:
+        raise UnsupportedWaveformError(
+            f"{path} holds several VWDB databases "
+            f"({', '.join(os.path.basename(c) for c in children)}); pass the "
+            f"one to read.")
+    return path
+
+
+def canonical_source(path: str, kind: str) -> str:
+    """The path that names a waveform database, whatever part was passed."""
+    if kind == "shm":
+        return shm_database(path)
+    if kind == "vwdb":
+        return vwdb_database(path)
+    return os.path.abspath(path)
+
+
+def _source_members(source: str) -> List[str]:
+    """Files whose content a waveform's conversion depends on.
+
+    One file for VCD / FSDB / FST; the database files for SHM (``*.trn`` /
+    ``*.dsn``) and VWDB (every file below the root, hidden scratch entries
+    such as ``.temp`` excluded). A directory's own mtime does not move when a
+    file inside is rewritten, so the members are what versions a database.
+    """
+    if os.path.isdir(source) and (source.lower().endswith(".vwdb")
+                                  or _is_vwdb_dir(source)):
+        members = []
+        for root, dirs, files in os.walk(source):
+            dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+            members += [os.path.join(root, f) for f in sorted(files)
+                        if not f.startswith(".")]
+        return members
+    if os.path.isdir(source):
+        try:
+            names = sorted(os.listdir(source))
+        except OSError:
+            return []
+        files = [os.path.join(source, n) for n in names
+                 if os.path.isfile(os.path.join(source, n))]
+        db = [f for f in files if f.lower().endswith((".trn", ".dsn"))]
+        return db or files
+    if source.lower().endswith(".trn"):
+        dsn = os.path.splitext(source)[0] + ".dsn"
+        return [source] + ([dsn] if os.path.isfile(dsn) else [])
+    return [source]
+
+
+def source_version(source: str) -> str:
+    """``file_version`` generalised to SHM / VWDB databases (directories)."""
+    if not os.path.isdir(source) and not source.lower().endswith(".trn"):
+        return file_version(source)
+    members = _source_members(source)
+    if not members:
+        return ""
+    return cache_key(*(f"{os.path.relpath(m, os.path.dirname(source))}:"
+                       f"{file_version(m)}" for m in members))
+
+
+def source_bytes(source: str) -> int:
+    """Size of a waveform on disk; the sum of its files for SHM."""
+    total = 0
+    for m in _source_members(source):
+        try:
+            total += os.path.getsize(m)
+        except OSError:
+            pass
+    return total
+
+
+def _source_mtime_ns(source: str) -> int:
+    """Newest modification time over the waveform's files."""
+    stamps = []
+    for m in _source_members(source) or [source]:
+        try:
+            stamps.append(os.stat(m).st_mtime_ns)
+        except OSError:
+            pass
+    if not stamps:
+        raise OSError(f"cannot stat {source}")
+    return max(stamps)
 
 
 def resolve_fsdb_reader() -> Optional[str]:
@@ -1042,7 +1238,473 @@ def fsdb_info(fsdb_path: str, timeout: Optional[float] = 600) -> dict:
 
 
 # =============================================================================
-# Converted FST placement and reuse (VCD and FSDB)
+# SHM -> FST (Cadence simvisdbutil export to VCD, then vcd2fst)
+# =============================================================================
+
+#: Install roots searched for Cadence utilities (Xcelium first, then
+#: Verisium Debug / Indago, which ship the same waveform tools).
+_CADENCE_HOME_VARS = ("XCELIUM_HOME", "XLM_ROOT", "CDS_INST_DIR",
+                      "XCELIUMHOME", "VERISIUM_DEBUG_HOME", "VDEBUG_HOME",
+                      "INDAGO_HOME", "INDAGO_ROOT")
+
+
+def _resolve_cadence_tool(name: str, env_var: str) -> Optional[str]:
+    """Locate a Cadence command-line utility shipped with Xcelium.
+
+    Order: ``$<env_var>`` -> PATH -> ``tools/bin`` (and ``bin``) under
+    ``$XCELIUM_HOME`` / ``$XLM_ROOT`` / ``$CDS_INST_DIR`` / ``$XCELIUMHOME``
+    (then Verisium Debug / Indago homes) -> next to ``xrun`` on PATH.
+    Returns None when nothing usable was found.
+    """
+    explicit = os.environ.get(env_var)
+    if explicit:
+        cand = shutil.which(explicit) or explicit
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return os.path.abspath(cand)
+        return None  # explicitly pointed somewhere broken: do not fall back
+    found = shutil.which(name)
+    if found:
+        return os.path.abspath(found)
+    roots = [os.environ.get(v) for v in _CADENCE_HOME_VARS]
+    xrun = shutil.which("xrun")
+    if xrun:
+        # <inst>/tools/bin/xrun or <inst>/bin/xrun
+        d = os.path.dirname(os.path.realpath(xrun))
+        roots += [d, os.path.dirname(d), os.path.dirname(os.path.dirname(d))]
+    for root in dict.fromkeys(r for r in roots if r):
+        for sub in (os.path.join("tools", "bin"), "bin", ""):
+            cand = os.path.join(root, sub, name)
+            if os.path.isfile(cand) and os.access(cand, os.X_OK):
+                return cand
+    return None
+
+
+def resolve_simvisdbutil() -> Optional[str]:
+    """Locate Cadence ``simvisdbutil``, which reads SHM databases.
+
+    ``$SIMVISDBUTIL_BIN`` first, then see :func:`_resolve_cadence_tool`.
+    """
+    return _resolve_cadence_tool("simvisdbutil", "SIMVISDBUTIL_BIN")
+
+
+def simvisdbutil_missing_error() -> ConversionError:
+    where = (f"$SIMVISDBUTIL_BIN={os.environ.get('SIMVISDBUTIL_BIN')!r}"
+             if os.environ.get("SIMVISDBUTIL_BIN") else
+             "$SIMVISDBUTIL_BIN (unset), PATH, $XCELIUM_HOME / $XLM_ROOT / "
+             "$CDS_INST_DIR tools/bin")
+    return ConversionError(
+        "'simvisdbutil' not found — needed to convert SHM -> FST.\n"
+        f"Searched: {where}\n"
+        "simvisdbutil ships with Cadence Xcelium (<install>/tools/bin). "
+        "Options:\n"
+        "  * add the Xcelium tools/bin directory to PATH in your MCP config, "
+        "or set XCELIUM_HOME\n"
+        "  * or set $SIMVISDBUTIL_BIN to the simvisdbutil binary\n"
+        "  * or export by hand and pass the .vcd instead:\n"
+        "      simvisdbutil waves.shm -vcd -output waves.vcd\n"
+        "  * or skip conversion entirely: dump FST straight from Xcelium "
+        "(docs/XCELIUM_FST_GUIDE.md).")
+
+
+@dataclass
+class ShmConversionResult:
+    shm_path: str
+    fst_path: str
+    elapsed_sec: float
+    binary: str = ""
+    export_sec: float = 0.0
+    shm_bytes: Optional[int] = None
+    vcd_bytes: Optional[int] = None
+    fst_bytes: Optional[int] = None
+    pack: str = "fastlz"
+    scopes: List[str] = field(default_factory=list)
+    signals_file: Optional[str] = None
+    command: List[str] = field(default_factory=list)
+    vcd2fst_command: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "shm_path": self.shm_path,
+            "fst_path": self.fst_path,
+            "binary": self.binary,
+            "pack": self.pack,
+            "elapsed_sec": round(self.elapsed_sec, 3),
+            "export_sec": round(self.export_sec, 3),
+            "shm_bytes": self.shm_bytes,
+            "intermediate_vcd_bytes": self.vcd_bytes,
+            "fst_bytes": self.fst_bytes,
+            "scopes": self.scopes,
+            "signals_file": self.signals_file,
+            "command": " ".join(self.command),
+            "vcd2fst_command": self.vcd2fst_command,
+        }
+
+
+def _clean_simvis_output(out: str) -> str:
+    """Drop simvisdbutil's progress spam, keep its messages."""
+    import re
+    out = re.sub(r"Translation \d+% done\.", "", out or "")
+    lines = [ln.rstrip() for ln in out.splitlines() if ln.strip()]
+    return "\n".join(lines[-20:])
+
+
+def _simvis_errors(out: str) -> List[str]:
+    """Fatal / error diagnostics (``*F,`` / ``*E,``) simvisdbutil printed.
+
+    It exits 0 after some of them (e.g. ``*F,BDSIGNM`` for an unknown
+    ``-signal``), so the return code alone cannot be trusted.
+    """
+    import re
+    lines = (out or "").splitlines()
+    errs = []
+    for i, ln in enumerate(lines):
+        if re.search(r"\*[FE],[A-Z0-9]+:", ln):
+            msg = ln.strip()
+            # the offending name is often on the next, indented line
+            if i + 1 < len(lines) and lines[i + 1].startswith(("\t", " ")):
+                msg += " " + lines[i + 1].strip()
+            errs.append(msg)
+    return errs
+
+
+def _shm_option_lines(scopes: Optional[List[str]],
+                      signals_file: Optional[str]) -> List[str]:
+    """``-scope`` / ``-signal`` options for a partial SHM export.
+
+    Hierarchy separators ``/`` are accepted and turned into simvisdbutil's
+    ``.``. Every scope is exported with all levels below it.
+    """
+    lines: List[str] = []
+    for s in scopes or []:
+        s = str(s).strip().strip("/").replace("/", ".")
+        if s:
+            lines.append(f"-scope {s} all")
+    if signals_file:
+        with open(signals_file) as fh:
+            for raw in fh:
+                name = raw.split("#", 1)[0].strip()
+                if name:
+                    name = name.strip("/").replace("/", ".")
+                    lines.append(f"-signal {name}")
+    return lines
+
+
+def convert_shm(shm_path: str, fst_path: Optional[str] = None,
+                scopes: Optional[List[str]] = None,
+                signals_file: Optional[str] = None,
+                pack: str = "fastlz",
+                timeout: Optional[float] = None) -> ShmConversionResult:
+    """Convert a Cadence SHM database to FST.
+
+    Two steps: ``simvisdbutil <db> -vcd`` exports a temporary VCD next to the
+    output FST, then vcd2fst converts it; the VCD is always removed. ``scopes``
+    (exact scope paths, exported with every level below) and ``signals_file``
+    (exact signal paths, one per line) narrow the export, which is the main
+    lever on large databases since the VCD intermediate is several times the
+    SHM size.
+
+    ``timeout`` bounds the whole conversion (both steps); ``None`` estimates
+    it from the database size. Both steps are heartbeat-monitored.
+    """
+    binary = resolve_simvisdbutil()
+    if binary is None:
+        raise simvisdbutil_missing_error()
+    _check_bin()  # vcd2fst is needed for step two: fail before exporting
+
+    db = shm_database(shm_path)
+    if not os.path.exists(db):
+        raise ConversionError(f"SHM not found: {db}")
+    if fst_path is None:
+        fst_path = _default_out_path(db)
+    fst_path = os.path.abspath(fst_path)
+    out_dir = os.path.dirname(fst_path) or "."
+    os.makedirs(out_dir, exist_ok=True)
+    if pack not in _PACK_FLAG:
+        raise ConversionError(f"unknown pack {pack!r}; expected one of {list(_PACK_FLAG)}")
+    if signals_file:
+        signals_file = os.path.abspath(signals_file)
+        if not os.path.exists(signals_file):
+            raise ConversionError(f"signals file not found: {signals_file}")
+
+    # The intermediate VCD sits next to the FST (same filesystem, and in the
+    # beside case its hidden name falls under _sweep_dead_tmp), unless
+    # WAVE_MCP_SHM_TMPDIR points somewhere with more room.
+    tmp_dir = os.environ.get("WAVE_MCP_SHM_TMPDIR") or out_dir
+    os.makedirs(tmp_dir, exist_ok=True)
+    base = os.path.basename(fst_path)
+    if not base.startswith("."):
+        base = "." + base
+    vcd_path = os.path.join(
+        tmp_dir, f"{base}.{socket.gethostname()}-{os.getpid()}.shm-export.vcd")
+    args_path = vcd_path[:-len(".vcd")] + ".args"
+
+    cmd = [binary, db, "-vcd", "-output", vcd_path, "-overwrite",
+           "-nolog", "-nocopyright"]
+    option_lines = _shm_option_lines(scopes, signals_file)
+
+    shm_bytes = source_bytes(db)
+    if timeout is None:
+        timeout = _estimate_timeout(shm_bytes, "shm")
+        _log_estimate(db, shm_bytes, timeout, "shm")
+    t0 = time.time()
+    try:
+        if option_lines:
+            # -file keeps a long signal list off the command line
+            with open(args_path, "w") as fh:
+                fh.write("\n".join(option_lines) + "\n")
+            cmd += ["-file", args_path]
+        try:
+            rc, out = _run_with_heartbeat(cmd, vcd_path, timeout, "shm")
+        except OSError as exc:
+            raise ConversionError(
+                f"cannot execute simvisdbutil at {binary}: {exc}") from exc
+        export_sec = time.time() - t0
+        errors = _simvis_errors(out)
+        if rc != 0 or errors or not os.path.exists(vcd_path):
+            detail = "\n".join(errors) or _clean_simvis_output(out) \
+                or "(no output)"
+            hint = ""
+            if option_lines:
+                hint = ("\nCheck the scopes / signals_file names: they are "
+                        "exact hierarchical paths (e.g. tb.u_dut), not "
+                        "substrings.")
+            raise ConversionError(
+                f"simvisdbutil SHM -> VCD export failed (rc={rc}): "
+                f"{detail}{hint}")
+        vcd_bytes = os.path.getsize(vcd_path)
+        remaining = None
+        if timeout:
+            remaining = max(timeout - export_sec, 60.0)
+        res = convert(vcd_path, fst_path, pack=pack, timeout=remaining)
+    finally:
+        for p in (vcd_path, args_path):
+            with contextlib.suppress(OSError):
+                os.remove(p)
+    return ShmConversionResult(
+        shm_path=db, fst_path=fst_path, elapsed_sec=time.time() - t0,
+        binary=binary, export_sec=export_sec, shm_bytes=shm_bytes,
+        vcd_bytes=vcd_bytes, fst_bytes=res.fst_bytes, pack=pack,
+        scopes=list(scopes or []), signals_file=signals_file, command=cmd,
+        vcd2fst_command=" ".join(res.command))
+
+
+# =============================================================================
+# VWDB -> FST (Cadence vwdb2vcd export to VCD, then vcd2fst)
+# =============================================================================
+
+def resolve_vwdb2vcd() -> Optional[str]:
+    """Locate Cadence ``vwdb2vcd``, which reads VWDB databases.
+
+    ``$VWDB2VCD_BIN`` first, then see :func:`_resolve_cadence_tool`.
+    """
+    return _resolve_cadence_tool("vwdb2vcd", "VWDB2VCD_BIN")
+
+
+def vwdb2vcd_missing_error() -> ConversionError:
+    where = (f"$VWDB2VCD_BIN={os.environ.get('VWDB2VCD_BIN')!r}"
+             if os.environ.get("VWDB2VCD_BIN") else
+             "$VWDB2VCD_BIN (unset), PATH, $XCELIUM_HOME / $XLM_ROOT / "
+             "$CDS_INST_DIR / $VERISIUM_DEBUG_HOME tools/bin")
+    return ConversionError(
+        "'vwdb2vcd' not found — needed to convert VWDB -> FST.\n"
+        f"Searched: {where}\n"
+        "vwdb2vcd ships with Cadence Xcelium and Verisium Debug "
+        "(<install>/tools/bin). Options:\n"
+        "  * add that tools/bin directory to PATH in your MCP config, or set "
+        "XCELIUM_HOME\n"
+        "  * or set $VWDB2VCD_BIN to the vwdb2vcd binary\n"
+        "  * or export by hand and pass the .vcd instead:\n"
+        "      vwdb2vcd -64 -db waves.vwdb -o waves.vcd\n"
+        "  * or skip conversion entirely: dump FST straight from Xcelium "
+        "(docs/XCELIUM_FST_GUIDE.md).")
+
+
+@dataclass
+class VwdbConversionResult:
+    vwdb_path: str
+    fst_path: str
+    elapsed_sec: float
+    binary: str = ""
+    export_sec: float = 0.0
+    vwdb_bytes: Optional[int] = None
+    vcd_bytes: Optional[int] = None
+    fst_bytes: Optional[int] = None
+    pack: str = "fastlz"
+    scopes: List[str] = field(default_factory=list)
+    signals_file: Optional[str] = None
+    command: List[str] = field(default_factory=list)
+    vcd2fst_command: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "vwdb_path": self.vwdb_path,
+            "fst_path": self.fst_path,
+            "binary": self.binary,
+            "pack": self.pack,
+            "elapsed_sec": round(self.elapsed_sec, 3),
+            "export_sec": round(self.export_sec, 3),
+            "vwdb_bytes": self.vwdb_bytes,
+            "intermediate_vcd_bytes": self.vcd_bytes,
+            "fst_bytes": self.fst_bytes,
+            "scopes": self.scopes,
+            "signals_file": self.signals_file,
+            "command": " ".join(self.command),
+            "vcd2fst_command": self.vcd2fst_command,
+        }
+
+
+def _vwdb_log_problems(log: str) -> List[str]:
+    """Failures vwdb2vcd only reports in its log (it exits 0 after them)."""
+    import re
+    probs = []
+    for ln in (log or "").splitlines():
+        if "[ERROR]" in ln or re.search(r"not found in database", ln):
+            probs.append(re.sub(r"^\[\d+\]\s*", "", ln.strip()))
+    return probs
+
+
+def _vcd_has_vars(vcd_path: str, limit: int = 1 << 20) -> bool:
+    """Whether a VCD header declares at least one variable."""
+    try:
+        with open(vcd_path, "rb") as fh:
+            head = fh.read(limit)
+    except OSError:
+        return False
+    end = head.find(b"$enddefinitions")
+    return b"$var" in (head if end < 0 else head[:end])
+
+
+def _vwdb_names(scopes: Optional[List[str]],
+                signals_file: Optional[str]) -> tuple:
+    """``(scopes, signals)`` in vwdb2vcd's dotted form.
+
+    ``/`` separators become ``.``; ``signals_file`` lines lose ``#``
+    comments and blanks, since vwdb2vcd's own list file accepts neither.
+    """
+    def norm(name: str) -> str:
+        return name.strip().strip("/").replace("/", ".")
+    scope_names = [norm(str(s)) for s in (scopes or []) if norm(str(s))]
+    signals: List[str] = []
+    if signals_file:
+        with open(signals_file) as fh:
+            for raw in fh:
+                name = norm(raw.split("#", 1)[0])
+                if name:
+                    signals.append(name)
+    return scope_names, signals
+
+
+def convert_vwdb(vwdb_path: str, fst_path: Optional[str] = None,
+                 scopes: Optional[List[str]] = None,
+                 signals_file: Optional[str] = None,
+                 pack: str = "fastlz",
+                 timeout: Optional[float] = None) -> VwdbConversionResult:
+    """Convert a Cadence VWDB (Verisium waveform database) to FST.
+
+    Two steps: ``vwdb2vcd -64 -db <db> -o <vcd>`` exports a temporary VCD
+    next to the output FST, then vcd2fst converts it; the VCD is always
+    removed. vwdb2vcd runs in a private scratch directory because it drops
+    ``vwdb2vcd.log`` (and crash dumps) into its working directory; the log
+    is read for errors it does not reflect in its exit code (an unknown
+    signal, an empty selection) and then discarded.
+
+    ``scopes`` are exact scope paths exported with every level below them;
+    ``signals_file`` lists exact signal paths, one per line.
+    """
+    binary = resolve_vwdb2vcd()
+    if binary is None:
+        raise vwdb2vcd_missing_error()
+    _check_bin()  # vcd2fst is needed for step two: fail before exporting
+
+    db = vwdb_database(vwdb_path)
+    if not os.path.isdir(db):
+        raise ConversionError(f"VWDB not found: {db}")
+    if fst_path is None:
+        fst_path = _default_out_path(db)
+    fst_path = os.path.abspath(fst_path)
+    out_dir = os.path.dirname(fst_path) or "."
+    os.makedirs(out_dir, exist_ok=True)
+    if pack not in _PACK_FLAG:
+        raise ConversionError(f"unknown pack {pack!r}; expected one of {list(_PACK_FLAG)}")
+    if signals_file:
+        signals_file = os.path.abspath(signals_file)
+        if not os.path.exists(signals_file):
+            raise ConversionError(f"signals file not found: {signals_file}")
+    scope_names, signal_names = _vwdb_names(scopes, signals_file)
+
+    tmp_root = os.environ.get("WAVE_MCP_SHM_TMPDIR") or out_dir
+    os.makedirs(tmp_root, exist_ok=True)
+    base = os.path.basename(fst_path)
+    if not base.startswith("."):
+        base = "." + base
+    work = os.path.join(
+        tmp_root, f"{base}.{socket.gethostname()}-{os.getpid()}.vwdb-export")
+    vcd_path = work + ".vcd"
+
+    cmd = [binary, "-64", "-db", db, "-o", vcd_path]
+    if scope_names:
+        cmd += ["-scope", *scope_names]
+
+    vwdb_bytes = source_bytes(db)
+    if timeout is None:
+        timeout = _estimate_timeout(vwdb_bytes, "vwdb")
+        _log_estimate(db, vwdb_bytes, timeout, "vwdb")
+    t0 = time.time()
+    try:
+        os.makedirs(work, exist_ok=True)
+        if signal_names:
+            sig_list = os.path.join(work, "signals.txt")
+            with open(sig_list, "w") as fh:
+                fh.write("\n".join(signal_names) + "\n")
+            cmd += ["-signalListFile", sig_list]
+        try:
+            rc, out = _run_with_heartbeat(cmd, vcd_path, timeout, "vwdb",
+                                          cwd=work)
+        except OSError as exc:
+            raise ConversionError(
+                f"cannot execute vwdb2vcd at {binary}: {exc}") from exc
+        export_sec = time.time() - t0
+        try:
+            with open(os.path.join(work, "vwdb2vcd.log"),
+                      errors="replace") as fh:
+                log = fh.read()
+        except OSError:
+            log = ""
+        problems = _vwdb_log_problems(log)
+        empty = rc == 0 and os.path.exists(vcd_path) \
+            and not _vcd_has_vars(vcd_path)
+        if rc != 0 or problems or empty or not os.path.exists(vcd_path):
+            detail = "\n".join(problems[-10:])
+            if empty and not detail:
+                detail = "the export selected no signals"
+            if not detail:
+                tail = [ln for ln in (out or "").splitlines() if ln.strip()]
+                detail = "\n".join(tail[-10:]) or "(no output)"
+            hint = ""
+            if scope_names or signal_names:
+                hint = ("\nCheck the scopes / signals_file names: they are "
+                        "exact hierarchical paths (e.g. tb.u_dut), not "
+                        "substrings.")
+            raise ConversionError(
+                f"vwdb2vcd VWDB -> VCD export failed (rc={rc}): "
+                f"{detail}{hint}")
+        vcd_bytes = os.path.getsize(vcd_path)
+        remaining = max(timeout - export_sec, 60.0) if timeout else None
+        res = convert(vcd_path, fst_path, pack=pack, timeout=remaining)
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(vcd_path)
+        shutil.rmtree(work, ignore_errors=True)
+    return VwdbConversionResult(
+        vwdb_path=db, fst_path=fst_path, elapsed_sec=time.time() - t0,
+        binary=binary, export_sec=export_sec, vwdb_bytes=vwdb_bytes,
+        vcd_bytes=vcd_bytes, fst_bytes=res.fst_bytes, pack=pack,
+        scopes=scope_names, signals_file=signals_file, command=cmd,
+        vcd2fst_command=" ".join(res.command))
+
+
+# =============================================================================
+# Converted FST placement and reuse (VCD, FSDB, SHM and VWDB)
 # =============================================================================
 #
 # Users keep a converted waveform next to its source, whether they ran the
@@ -1077,7 +1739,7 @@ _CONVERT_TOOL_VERSION = 2
 
 def _conversion_record(src: str, opts: dict) -> dict:
     """What a cached FST was produced from: source version plus options."""
-    return {"source": os.path.abspath(src), "source_version": file_version(src),
+    return {"source": os.path.abspath(src), "source_version": source_version(src),
             "options": opts, "tool_version": _CONVERT_TOOL_VERSION}
 
 
@@ -1091,11 +1753,7 @@ def _lock_wait(source: str, kind: str, timeout: Optional[float]) -> float:
     """
     if timeout:
         return float(timeout) + 120.0
-    try:
-        size = os.path.getsize(source)
-    except OSError:
-        size = 0
-    return _estimate_timeout(size, kind) + 120.0
+    return _estimate_timeout(source_bytes(source), kind) + 120.0
 
 
 def _artifact_ok(fst_path: str, need_hier: bool) -> bool:
@@ -1131,8 +1789,20 @@ def _cache_hit(fst_path: str, record_path: str, want: dict,
 
 
 def beside_path(source: str) -> str:
-    """The FST that belongs next to ``source``: same directory and stem."""
-    return os.path.splitext(os.path.abspath(source))[0] + ".fst"
+    """The FST that belongs next to ``source``: same directory and stem.
+
+    A VWDB that the simulator placed inside a ``.shm`` directory
+    (``run/waves.shm/waves_ida.vwdb``) gets its FST beside that directory
+    (``run/waves_ida.fst``): the ``.shm`` directory belongs to the simulator
+    and also versions the SHM half of a hybrid dump.
+    """
+    source = os.path.abspath(source)
+    stem = os.path.splitext(source)[0]
+    parent = os.path.dirname(source)
+    if source.lower().endswith(".vwdb") and parent.lower().endswith(".shm"):
+        return os.path.join(os.path.dirname(parent),
+                            os.path.basename(stem) + ".fst")
+    return stem + ".fst"
 
 
 def _fst_opens(fst_path: str) -> bool:
@@ -1181,7 +1851,7 @@ def _beside_state(source: str, target: str, kind: str,
     if rec and rec.get("target_version") == file_version(target):
         # the file is still the one we wrote: our record decides
         if (rec.get("source") == source
-                and rec.get("source_version") == file_version(source)
+                and rec.get("source_version") == source_version(source)
                 and rec.get("tool_version") == _CONVERT_TOOL_VERSION):
             if _fst_opens(target):
                 return "hit", rec.get("detail", {})
@@ -1189,7 +1859,7 @@ def _beside_state(source: str, target: str, kind: str,
         return "stale", {"reason": "the source waveform changed since it "
                                    "was converted"}
     try:
-        newer = os.stat(target).st_mtime_ns >= os.stat(source).st_mtime_ns
+        newer = os.stat(target).st_mtime_ns >= _source_mtime_ns(source)
     except OSError:
         newer = False
     if not newer:
@@ -1204,6 +1874,14 @@ def _run_converter(source: str, out: str, kind: str, *, pack: str,
                    timeout: Optional[float]) -> dict:
     if kind == "fsdb":
         return convert_fsdb(source, out, scopes=scopes,
+                            signals_file=signals_file, pack=pack,
+                            timeout=timeout).to_dict()
+    if kind == "shm":
+        return convert_shm(source, out, scopes=scopes,
+                           signals_file=signals_file, pack=pack,
+                           timeout=timeout).to_dict()
+    if kind == "vwdb":
+        return convert_vwdb(source, out, scopes=scopes,
                             signals_file=signals_file, pack=pack,
                             timeout=timeout).to_dict()
     return convert(source, out, pack=pack, timeout=timeout).to_dict()
@@ -1237,8 +1915,13 @@ def _sweep_dead_tmp(target: str) -> None:
         pid = rest[len(mine):].split(".", 1)[0]
         if not pid.isdigit() or _pid_alive(int(pid)):
             continue
+        stale = os.path.join(os.path.dirname(target), name)
+        if os.path.isdir(stale) and not os.path.islink(stale):
+            # a VWDB export's scratch directory
+            shutil.rmtree(stale, ignore_errors=True)
+            continue
         with contextlib.suppress(OSError):
-            os.remove(os.path.join(os.path.dirname(target), name))
+            os.remove(stale)
 
 
 def _pid_alive(pid: int) -> bool:
@@ -1280,7 +1963,7 @@ def _convert_beside(source: str, target: str, kind: str, *, pack: str,
 def _opts_for(kind: str, pack: str, scopes: Optional[List[str]],
               signals_file: Optional[str]) -> dict:
     opts = {"kind": kind, "pack": pack}
-    if kind == "fsdb":
+    if kind in ("fsdb", "shm", "vwdb"):
         opts.update(scopes=sorted(scopes or []),
                     signals_file=os.path.abspath(signals_file) if signals_file else None)
     return opts
@@ -1360,7 +2043,7 @@ def _cached_fst(source: str, *, kind: str,
                 force: bool = False) -> dict:
     """Give ``source`` an FST, reusing a valid one and converting otherwise.
 
-    ``kind`` is ``"fsdb"`` or ``"vcd"``. A full conversion lives beside the
+    ``kind`` is ``"fsdb"``, ``"shm"`` or ``"vcd"``. A full conversion lives beside the
     source as ``<name>.fst`` (see the section comment above); partial
     conversions and unwritable source directories fall back to the cache.
     ``force=True`` skips reuse and always converts (the explicit convert
@@ -1371,7 +2054,10 @@ def _cached_fst(source: str, *, kind: str,
     where it is, or what was replaced; ``None`` when nothing needs saying),
     ``cache_dir`` for cache placements and the conversion ``detail``.
     """
-    source = os.path.abspath(source)
+    try:
+        source = canonical_source(source, kind)
+    except UnsupportedWaveformError as exc:
+        raise ConversionError(str(exc)) from exc
     if not os.path.exists(source):
         raise ConversionError(f"{kind.upper()} not found: {source}")
     pack = pack or default_pack(kind)
@@ -1405,7 +2091,7 @@ def _cached_fst(source: str, *, kind: str,
                     "notice": None, "detail": info,
                     "reused_by_hand": state == "hand"}
 
-    blocked = _dir_writable(os.path.dirname(source))
+    blocked = _dir_writable(os.path.dirname(target))
     if blocked is None:
         with pol.locked(rec_dir, what=f"another conversion of {source}",
                         wait=_lock_wait(source, kind, timeout)):
@@ -1453,7 +2139,7 @@ def _cached_fst(source: str, *, kind: str,
     verb = "Reused the FST" if got["cached"] else "Converted FST was placed"
     got["notice"] = (
         f"{verb} in the wave-mcp cache at {got['fst_path']} because "
-        f"{os.path.dirname(source)} is not writable ({blocked}); the usual "
+        f"{os.path.dirname(target)} is not writable ({blocked}); the usual "
         f"place, {target}, was left untouched. Make the directory writable "
         f"to keep the FST beside the source, or set WAVE_MCP_CACHE_ROOT to "
         f"move the cache.")
@@ -1498,6 +2184,8 @@ def resolve_waveform(path: str, *,
         .fst  -> returned as-is
         .vcd  -> cached_fst(kind="vcd")
         .fsdb -> cached_fst(kind="fsdb")
+        .shm  -> cached_fst(kind="shm")   (directory, or its .trn / .dsn)
+        .vwdb -> cached_fst(kind="vwdb")  (directory, or a path inside it)
         other -> UnsupportedWaveformError
 
     Defaults match ``prepare_session`` (no slicing, the converter's default pack);
@@ -1509,6 +2197,7 @@ def resolve_waveform(path: str, *,
     """
     source = os.path.abspath(path)
     kind = waveform_kind(source)
+    source = canonical_source(source, kind)
     if not os.path.exists(source):
         raise FileNotFoundError(f"{kind.upper()} not found: {source}")
     if kind == "fst":

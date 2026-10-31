@@ -79,7 +79,7 @@ Arguments:
 
 Converted output is cached and shared with `prepare_session`: the same waveform is converted once whether you analyse it first and view it later, or the other way round. The FST is written next to the source (`dump.vcd` → `dump.fst`), and one you converted by hand is used as is. When the source directory is not writable (a read-only regression area, say) it goes to `~/.wave-mcp/cache/fst/` (honouring `WAVE_MCP_CACHE_ROOT`) instead, and `open_wave_view` says so in `warnings`. A GB-scale FSDB conversion costs minutes; reusing the FST costs seconds.
 
-Anything other than `.fst` / `.vcd` / `.fsdb` (`.ghw`, `.vpd`, an SHM directory) is rejected at the entry point with the list of supported extensions, instead of falling through to a converter that reports a problem pointing in the wrong direction.
+Anything other than `.fst` / `.vcd` / `.fsdb` / `.shm` / `.vwdb` (`.ghw`, `.vpd`, ...) is rejected at the entry point with the list of supported extensions, instead of falling through to a converter that reports a problem pointing in the wrong direction.
 
 The command prints three lines: the browser URL, the native Surfer client connection (`surfer <token_url>`), and an SSH port-forward command. On desktops (with `DISPLAY`) it launches the browser via `xdg-open`; in SSH / code-agent sessions, IDE terminals (VS Code, Cursor, etc.) auto-forward localhost ports, so just click the URL. The process stays in the foreground; Ctrl-C exits and reaps all child processes.
 
@@ -122,7 +122,7 @@ Returns:
 
 Field notes:
 
-- Each `fst_paths` entry can be `.fst`, `.vcd` or `.fsdb`, one or two in total (two open a comparison view). FST opens directly; VCD / FSDB are converted to FST first. Converted output is cached and shared with `prepare_session`, so a waveform already converted during analysis is not converted again here. Any other extension (`.ghw`, `.vpd`, an SHM directory) returns `{"status": "error", "error_type": "unsupported_format", "error": …, "hint": …}` at the entry point, listing the supported formats.
+- Each `fst_paths` entry can be `.fst`, `.vcd`, `.fsdb`, `.shm` (the directory or its `.trn` / `.dsn`, see [SHM_GUIDE.en.md](SHM_GUIDE.en.md)) or `.vwdb` (see [VWDB_GUIDE.en.md](VWDB_GUIDE.en.md)), one or two in total (two open a comparison view). FST opens directly; VCD / FSDB / SHM / VWDB are converted to FST first. Converted output is cached and shared with `prepare_session`, so a waveform already converted during analysis is not converted again here. Any other extension (`.ghw`, `.vpd`, ...) returns `{"status": "error", "error_type": "unsupported_format", "error": …, "hint": …}` at the entry point, listing the supported formats.
 - Each `signals` entry is `{path, color?, group?, format?, source?}`. In compare views, `source: "a"/"b"` assigns a signal to one waveform; by default it is added to both.
 - Prefer a short ASCII word for `group`. The heading is drawn in Surfer's WASM canvas, whose font carries no CJK glyphs, so a non-ASCII name renders as boxes (the grouping itself still works). Spaces are folded to underscores automatically: the sucl parser rejects a parameter containing whitespace and would silently drop the whole heading. Put prose in `annotation`, which accepts any language.
 - The `diff` parameter takes a `diff_waveforms` result reference `{source_a, source_b, first_divergence}` (these three fields only) and automatically places a red marker at the first divergence, no manual conversion needed; `first_divergence` can be passed back verbatim, and a suffixed time like `"85ns"` is normalized.
@@ -349,4 +349,4 @@ A view's lifecycle follows the process that opened it. After an MCP server resta
 
 ---
 
-Questions and bug reports: [GitHub Issues](https://github.com/Tencent/wave-mcp/issues).
+Questions and bug reports: [GitHub Issues](https://github.com/dv365lab/dv365-wave-mcp/issues).

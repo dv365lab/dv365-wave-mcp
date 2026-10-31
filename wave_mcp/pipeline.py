@@ -3,12 +3,16 @@
 This wires the team's standard workflow into one entry point so an LLM client can
 go from "I want to analyze the waveform" to a ready session in a single call:
 
-    waveform file (.fst / .fsdb / .vcd)  ->  [convert to FST]  ->
+    waveform file (.fst / .fsdb / .shm / .vwdb / .vcd) -> [convert to FST] ->
     build session.json           ->  open session          ->  ready to query
 
 The entry point takes a *waveform file your simulator already produced*:
   * ``.fst`` — read directly (no conversion).
   * ``.fsdb`` — auto-converted to FST (bundled fsdb2fst; docs/FSDB_GUIDE.md).
+  * ``.shm`` — auto-converted to FST (Cadence simvisdbutil -> VCD -> vcd2fst;
+    docs/SHM_GUIDE.md).
+  * ``.vwdb`` — auto-converted to FST (Cadence vwdb2vcd -> VCD -> vcd2fst;
+    docs/VWDB_GUIDE.md).
   * ``.vcd`` — auto-converted to FST (GTKWave vcd2fst).
 
 A converted FST is kept beside its source as ``<name>.fst`` and reused from
@@ -67,13 +71,13 @@ def _heavy_waveform_hints(wave_path: str, detail: dict,
     concrete lever (scopes / signals_file, or dumping FST straight
     from the simulator) to shorten the next conversion.
     """
-    try:
-        size = os.path.getsize(wave_path)
-    except OSError:
-        return []
+    size = convert.source_bytes(wave_path)
     if size < _HEAVY_WAVE_MB * 1024 * 1024:
         return []
-    kind = "FSDB" if wave_path.lower().endswith(".fsdb") else "VCD"
+    try:
+        kind = convert.waveform_kind(wave_path).upper()
+    except convert.UnsupportedWaveformError:
+        kind = "VCD"
     cached = bool(detail.get("cached"))
     elapsed = detail.get("elapsed_sec")
     line = f"large waveform: {size / (1024 ** 3):.2f} GB {kind}"
@@ -757,13 +761,19 @@ def prepare_session(out_dir: Optional[str], wave_path: str, *,
     ``wave_path`` is a waveform file your simulator already produced:
       * ``.fst`` — read directly (no conversion).
       * ``.fsdb`` — auto-converted via the bundled fsdb2fst (docs/FSDB_GUIDE.md).
+      * ``.shm`` — Cadence SHM database (the directory, or its .trn/.dsn),
+        exported with simvisdbutil and converted via vcd2fst.
+      * ``.vwdb`` — Cadence Verisium waveform database (the directory),
+        exported with vwdb2vcd and converted via vcd2fst.
       * ``.vcd`` (anything else) — auto-converted to FST via GTKWave vcd2fst.
 
     A full conversion is kept beside the source as ``<name>.fst`` and reused
     from there, including one the user converted by hand; a stale one is
     overwritten. Partial conversions and unwritable source directories go to
     the derived-cache layer, and ``hints`` says so. ``scopes``
-    / ``signals_file`` slice a huge FSDB down to a subset (fsdb2fst -l / -L);
+    / ``signals_file`` slice a huge FSDB (fsdb2fst -l / -L) or SHM
+    (simvisdbutil -scope / -signal) or VWDB (vwdb2vcd -scope /
+    -signalListFile) down to a subset;
     ``pack`` picks the compressor (fastlz / lz4 / zlib, default per converter).
     All three take part in the cache key.
 
@@ -781,7 +791,7 @@ def prepare_session(out_dir: Optional[str], wave_path: str, *,
     # Reject unsupported formats up front by name: falling through to the VCD
     # converter makes a .ghw/.vpd fail as "VCD not found" or inside vcd2fst,
     # which points at the wrong problem entirely.
-    convert.waveform_kind(wave_path)
+    wave_kind = convert.waveform_kind(wave_path)
 
     lowered = wave_path.lower()
     if lowered.endswith(".fst"):
@@ -804,6 +814,26 @@ def prepare_session(out_dir: Optional[str], wave_path: str, *,
             hints.append(got["notice"])
         steps.append(StepResult("convert_fsdb_to_fst", True, time.time() - t0,
                                 detail))
+        hints.extend(_heavy_waveform_hints(wave_path, detail, scopes, signals_file))
+    elif wave_kind in ("shm", "vwdb"):
+        # Cadence SHM (simvisdbutil) / VWDB (vwdb2vcd) -> VCD -> FST. The
+        # database is named by its directory whichever part of it the caller
+        # passed (.trn / .dsn, a file inside the .vwdb, a VWDB-only .shm), so
+        # the session identity and the beside FST do not depend on that.
+        wave_path = convert.canonical_source(wave_path, wave_kind)
+        if not os.path.exists(wave_path):
+            raise FileNotFoundError(
+                f"{wave_kind.upper()} not found: {wave_path}")
+        t0 = time.time()
+        got = convert.cached_fst(
+            wave_path, kind=wave_kind, scopes=scopes,
+            signals_file=signals_file, pack=pack, timeout=timeout)
+        fst_path = got["fst_path"]
+        detail = _conversion_detail(got)
+        if got.get("notice"):
+            hints.append(got["notice"])
+        steps.append(StepResult(f"convert_{wave_kind}_to_fst", True,
+                                time.time() - t0, detail))
         hints.extend(_heavy_waveform_hints(wave_path, detail, scopes, signals_file))
     else:
         # VCD (anything else is rejected by name in convert.waveform_kind)

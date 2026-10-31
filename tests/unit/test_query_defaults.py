@@ -83,7 +83,7 @@ def _stage_naming() -> None:
     for name in ("cursor_set", "cursor_get", "cursor_clear"):
         check(f"{name} is gone", name not in tools)
         check(f"{name} has no attribute either", not hasattr(srv, name))
-    check("tool count is unchanged at 37", len(tools) == 37, str(len(tools)))
+    check("tool count is unchanged at 39", len(tools) == 39, str(len(tools)))
 
     # cursor_* never shipped, so there is nothing to explain: the names are
     # simply unknown, exactly like any other typo.

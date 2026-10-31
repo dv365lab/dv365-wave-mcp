@@ -70,7 +70,7 @@ async def run(port: int) -> None:
             await a.initialize()
             await b.initialize()
             tools = {t.name for t in (await a.list_tools()).tools}
-            check("37 tools over HTTP", len(tools) == 37, str(len(tools)))
+            check("39 tools over HTTP", len(tools) == 39, str(len(tools)))
 
             print("== two clients, two explicit sessions ==")
             oa, _, _ = await _call(a, "open_session", {"session_path": SAMPLE})

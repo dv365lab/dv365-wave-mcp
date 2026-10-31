@@ -8,12 +8,65 @@
 
 [English](README.en.md) | 简体中文
 
+> [!IMPORTANT]
+> ## 🆕 新增功能：支持 Cadence SHM 与 VWDB 波形
+>
+> 原项目只支持 FST / VCD / FSDB，且明确写明“不支持 SHM”。**本版本在原项目基础上新增了以下功能**：
+>
+> | 新增能力 | 说明 |
+> | --- | --- |
+> | ✅ **SHM 波形**（Cadence Xcelium / SimVision，`waves.shm/` 目录） | 直接传 `.shm` 目录，或其中的 `.trn` / `.dsn` 文件，自动转成 FST |
+> | ✅ **VWDB 波形**（Cadence Verisium Debug，`*.vwdb` 目录） | 直接传 `.vwdb` 目录或目录内任意路径，自动转成 FST；只含 VWDB 的 `.shm` 目录也能识别 |
+> | ✅ **新 MCP 工具 `convert_shm_to_fst`** | 手动控制 SHM 转换，支持按 `scopes` / `signals_file` 只转一部分 |
+> | ✅ **新 MCP 工具 `convert_vwdb_to_fst`** | 手动控制 VWDB 转换，支持按 `scopes` / `signals_file` 只转一部分 |
+> | ✅ **所有入口统一支持** | `prepare_session`、`open_wave_view`、`wave-view`、`wave-session --vcd` 都能直接吃 `.shm` / `.vwdb` |
+> | ✅ **工具总数 37 → 39** | 新增上面两个转换工具 |
+>
+> **转换原理**：SHM、VWDB 都是 Cadence 不公开的格式，因此调用 Cadence 自带的工具先导出临时 VCD，再用 `vcd2fst` 转成 FST，临时 VCD 用完即删：
+>
+> ```
+> waves.shm   --simvisdbutil-->  临时 VCD  --vcd2fst-->  waves.fst
+> waves.vwdb  --vwdb2vcd------>  临时 VCD  --vcd2fst-->  waves.fst
+> ```
+>
+> **用法示例**：
+>
+> ```python
+> prepare_session(wave_path="sim/waves.shm", filelist_path="rtl.f", top="tb")                  # SHM
+> prepare_session(wave_path="sim/waves.shm/waves_ida.vwdb", filelist_path="rtl.f", top="tb")  # VWDB
+> convert_shm_to_fst(shm_path="sim/waves.shm", scopes=["tb.u_dut"])     # 只转一个子树
+> convert_vwdb_to_fst(vwdb_path="sim/waves.vwdb", signals_file="sigs.txt")  # 只转信号列表
+> ```
+>
+> ```bash
+> wave-view sim/waves.shm
+> wave-view sim/waves.vwdb
+> ```
+>
+> **需要的环境**：
+>
+> - `simvisdbutil`（读 SHM）与 `vwdb2vcd`（读 VWDB），均随 Xcelium 安装（`<install>/tools/bin`）。依次在 `$SIMVISDBUTIL_BIN` / `$VWDB2VCD_BIN`、`PATH`、`$XCELIUM_HOME` / `$XLM_ROOT` / `$CDS_INST_DIR` / `$VERISIUM_DEBUG_HOME` 的 `tools/bin`、`xrun` 所在目录中查找。MCP 由 IDE 拉起时通常只需在 `env` 里配 `XCELIUM_HOME`。
+> - `vcd2fst`（GTKWave），与原有的 VCD 通道相同。
+> - 可选：`WAVE_MCP_SHM_TMPDIR` 指定临时 VCD 的存放目录（默认与输出 FST 同目录；展开后的 VCD 通常是原库的数倍大）。
+>
+> **行为要点**：
+>
+> - **产物位置**：`sim/waves.shm` → `sim/waves.fst`，`sim/waves.vwdb` → `sim/waves.fst`；位于 `.shm` 目录内的 VWDB（如 `waves.shm/waves_ida.vwdb`），FST 放在 `.shm` 目录**旁边**（`waves_ida.fst`），不写进仿真器目录。
+> - **复用与更新**：与 VCD / FSDB 共用同一套规则，已转过的直接复用；重新仿真后数据库文件变化会自动重转。部分转换和目录不可写时改放缓存目录，并在返回里说明原因。
+> - **SHM / VWDB 混合目录**：同时含 `.trn` 与 `*.vwdb` 的 `.shm` 目录按 SHM 读；要读 VWDB 请直接传里面的 `*.vwdb`。
+> - **错误不会被吞掉**：`simvisdbutil` / `vwdb2vcd` 在信号或 scope 不存在时退出码仍可能为 0，本版本会识别其 `*F,` / `*E,` 诊断与日志，以及“导出结果没有任何信号”的情况，直接报错，不会生成缺信号的 FST。
+> - `scopes` 对 SHM / VWDB 是**完整层次路径**（如 `tb.u_dut`，`/` 会自动换成 `.`），不是 FSDB 那样的子串匹配。
+>
+> **验证情况**：已在本机 Xcelium 26.03 上用真实仿真产生的 SHM 与 VWDB 完成端到端验证（转换、复用、建 session、查询、部分转换、错误检测）；新增单元测试 `tests/unit/test_shm.py`、`tests/unit/test_vwdb.py`，无 Xcelium 环境时用替身脚本覆盖转换流程。
+>
+> **详细文档**：[SHM 波形接入指南](docs/SHM_GUIDE.md) · [VWDB 波形接入指南](docs/VWDB_GUIDE.md) · 变更记录见 [CHANGELOG.md](CHANGELOG.md) 的 `[Unreleased]` 一节。
+
 **wave-mcp 是腾讯蓬莱实验室验证团队开源的一款 RTL 波形调试 MCP Server**，为 LLM 提供波形调试工具集：
-读 **FST 波形 + RTL 网表**，提供层次探索、信号查询、驱动分析、值/X 态追踪、波形对比与浏览器波形查看器等 **37 个 MCP 工具**。
+读 **FST 波形 + RTL 网表**，提供层次探索、信号查询、驱动分析、值/X 态追踪、波形对比与浏览器波形查看器等 **39 个 MCP 工具**。
 **Apache-2.0 开源，无需任何商用 License，支持任意并发。**
 
-> **FST 直读，VCD / FSDB 自动转 FST**：Verilator `--trace-fst`、Icarus 直接产 FST 就能读；
-> 手上只有 VCD 或 FSDB 也没关系，`prepare_session` 自动转换后再建 session（FSDB 转换不占 Verdi license）。
+> **FST 直读，VCD / FSDB / SHM / VWDB 自动转 FST**：Verilator `--trace-fst`、Icarus 直接产 FST 就能读；
+> 手上只有 VCD、FSDB 或 Cadence 的 SHM / VWDB 也没关系，`prepare_session` 自动转换后再建 session（FSDB 转换不占 Verdi license）。
 > 它**不跑仿真器**，你用自己的流程跑出波形，把结果交给它即可。
 
 ---
@@ -40,7 +93,7 @@ wave-mcp 用**纯开源技术栈**（pylibfst + pyslang）提供完整波形调�
 | 工具调用 | 310 万多次调用全部通过 |
 | 驱动分析 | 驱动 / 扇入 / 连通 / 追溯在生产级项目上全量验证 |
 | 超大模块 | **百万级 scope 稳定完成分析** |
-| 工具覆盖 | 37 个工具全部验证，含 viewer / diff 的单元与浏览器端到端覆盖 |
+| 工具覆盖 | 39 个工具全部验证，含 viewer / diff 的单元与浏览器端到端覆盖 |
 
 ![工具调用分布](docs/images/tool-calls-distribution.png)
 
@@ -121,10 +174,10 @@ python -m wave_mcp.server --session sessions/my_module
 
 ## CLI 模式
 
-不挂 Code Agent 时，也能在终端直接调用全部 37 个工具（与 MCP 同名同参数）：
+不挂 Code Agent 时，也能在终端直接调用全部 39 个工具（与 MCP 同名同参数）：
 
 ```bash
-wave-mcp query --list                            # 列出全部 37 个工具
+wave-mcp query --list                            # 列出全部 39 个工具
 
 wave-mcp query signal_values --session sessions/my_module \
     --paths top.u_tx.tx_serial                  # 查询信号值变化
@@ -268,15 +321,15 @@ wave-session --vcd sim/dump.vcd --top top_tb --filelist rtl.f
 
 > 通过 MCP 工具使用时无需手动转换：`prepare_session` 传入 `.vcd` 会自动走 ① 的转换路径。
 
-**转换产物放在哪**：转出的 FST 和原波形放在同一目录，文件名相同只换扩展名（`sim/dump.vcd` → `sim/dump.fst`，FSDB 另有 `dump.fst.hier`）。旁边已经有 FST（不管是你手动转的还是之前自动转的），只要不比原波形旧就直接用，不再重转；比原波形旧或打不开就覆盖。三种情况会改放到 `~/.wave-mcp/cache/fst/`（受 `WAVE_MCP_CACHE_ROOT` 影响）并在返回里说明原因和位置：原波形目录不可写、带 `scopes`/`signals_file` 的部分转换（不占用完整波形的文件名）、目录仍不可写时复用缓存里那份。
+**转换产物放在哪**：转出的 FST 和原波形放在同一目录，文件名相同只换扩展名（`sim/dump.vcd` → `sim/dump.fst`，FSDB 另有 `dump.fst.hier`，SHM 目录 `sim/waves.shm` → `sim/waves.fst`，VWDB 目录 `sim/waves.vwdb` → `sim/waves.fst`）。旁边已经有 FST（不管是你手动转的还是之前自动转的），只要不比原波形旧就直接用，不再重转；比原波形旧或打不开就覆盖。三种情况会改放到 `~/.wave-mcp/cache/fst/`（受 `WAVE_MCP_CACHE_ROOT` 影响）并在返回里说明原因和位置：原波形目录不可写、带 `scopes`/`signals_file` 的部分转换（不占用完整波形的文件名）、目录仍不可写时复用缓存里那份。
 
 ---
 
-## 工具（37 个，12 大类）
+## 工具（39 个，12 大类）
 
 | 类别 | 工具 | 说明 |
 | --- | --- | --- |
-| 波形准备 | `prepare_session` / `open_static_session` / `convert_vcd_to_fst` / `convert_fsdb_to_fst` | 波形入口 → session 一条龙（`.fst` / `.fsdb` / `.vcd` 自动识别，转出的 FST 放原波形旁边并复用）；静态分析无需波形；不跑仿真器 |
+| 波形准备 | `prepare_session` / `open_static_session` / `convert_vcd_to_fst` / `convert_fsdb_to_fst` / `convert_shm_to_fst` / `convert_vwdb_to_fst` | 波形入口 → session 一条龙（`.fst` / `.fsdb` / `.shm` / `.vwdb` / `.vcd` 自动识别，转出的 FST 放原波形旁边并复用）；静态分析无需波形；不跑仿真器 |
 | 会话管理 | `open_session` / `close_session` / `session_info` | `session_info` 含 netlist_health + definition_coverage |
 | 查询默认值 | `query_defaults_set` / `query_defaults_get` / `query_defaults_clear` | 按会话设定默认信号与时间窗；显式参数始终优先，用到默认值的回复在 `_query.from_defaults` 里列出继承项；带 `defaults_revision` 可钉住一版，被改动则报 `defaults_conflict` |
 | 层次探索 | `find_instances` / `list_modules` / `scope_info` | 模块定义名三层解析：网表 → 命名推断 → 手工 scope_map |
@@ -301,12 +354,12 @@ wave-view dump.fst --signals top.u_dma.req_valid --cursor 1523400ps
 # 双波形对比视图（上下两个 pane，agent 设置的缩放/游标同步注入两栏）
 wave-view pass.fst fail.fst --labels pass fail
 
-# VCD / FSDB 直接传，自动转 FST 后打开
+# VCD / FSDB / SHM / VWDB 直接传，自动转 FST 后打开
 wave-view sim.vcd
 ```
 
 - 命令行打印 URL；桌面环境自动开浏览器，SSH/code agent 场景 IDE 终端自动转发端口点开即看。
-- 波形格式：`.fst` 直接打开，`.vcd` / `.fsdb` 自动转成 FST，转出的 FST 放在原波形旁边并与 `prepare_session` 共用，同一个波形先分析后看图还是先看图后分析都只转一次，手动转好放在旁边的也直接用。其他格式在入口直接报错并列出支持的扩展名。
+- 波形格式：`.fst` 直接打开，`.vcd` / `.fsdb` / `.shm` / `.vwdb` 自动转成 FST，转出的 FST 放在原波形旁边并与 `prepare_session` 共用，同一个波形先分析后看图还是先看图后分析都只转一次，手动转好放在旁边的也直接用。其他格式在入口直接报错并列出支持的扩展名。
 - agent 典型闭环：case 挂了 → `diff_waveforms([pass, fail])` 定位首分歧 → `signal_fanin` 回溯根因 → `open_wave_view` 双波形 + 分歧 marker + 分析说明弹窗一次呈现。
 - 分析说明是可收起的 log 弹窗，说明里的时刻引用（如 `[85000ps](#t=85000ps)`）点击即跳游标，游标/视口/marker 更新为无闪刷新。
 - 完整指南（MCP 工具参数、调试工作流、架构原理、部署与排障）见 [`docs/WAVE_VIEWER.md`](docs/WAVE_VIEWER.md)。
@@ -396,6 +449,9 @@ wave-view sim.vcd
 | `FSDB2FST_BIN` | 不用配 | 指定已编译好的 `fsdb2fst` | 空。自动探测，首次转换时按需就地编译 |
 | `WAVE_MCP_FSDB2FST_AUTOBUILD` | 不用配 | 设 `0` 关闭首次自动编译 | `1`（开启） |
 | `VCD2FST_BIN` | 不用配 | 指定 GTKWave `vcd2fst` 可执行文件 | `vcd2fst`（从 `PATH` 查找） |
+| `XCELIUM_HOME` / `SIMVISDBUTIL_BIN` | 读 `.shm` 且 `simvisdbutil` 不在 `PATH` 上时配 | Xcelium 安装根目录（在其 `tools/bin` 下找 `simvisdbutil`），或直接指定 `simvisdbutil`，见 [SHM 波形接入指南](docs/SHM_GUIDE.md) | 空。从 `PATH`、`$XLM_ROOT` / `$CDS_INST_DIR`、`xrun` 所在目录查找 |
+| `VWDB2VCD_BIN` | 读 `.vwdb` 且 `vwdb2vcd` 不在 `PATH` 上时配（或配 `XCELIUM_HOME`） | 直接指定 `vwdb2vcd`，见 [VWDB 波形接入指南](docs/VWDB_GUIDE.md) | 空。查找方式同 `simvisdbutil`，另含 `$VERISIUM_DEBUG_HOME` |
+| `WAVE_MCP_SHM_TMPDIR` | 不用配 | SHM / VWDB 转换时临时 VCD 的存放目录（转完即删） | 空。与输出 FST 同目录 |
 | `WAVE_MCP_VIEWER_ASSETS` | 不用配 | 波形查看器资产目录（须含 `surver` 与 `wasm/index.html`），离线包安装时自动设好 | 空。依次找 pip 资产包、`~/.wave-mcp/cache/viewer/` |
 | `WAVE_MCP_MAX_VIEWS` | 不用配 | 并发视图上限，超出则关掉最旧的；设 `0` 取消上限 | `8` |
 | `WAVE_MCP_WORKERS` | 不用配 | 同时执行的工具调用上限；超出的排队等待 | `4` |
@@ -424,14 +480,22 @@ wave-view sim.vcd
 
 ## FAQ
 
-**Q1：支持 FSDB 和 SHM 吗？**
-支持 FSDB，不支持 SHM。
+**Q1：支持 FSDB、SHM 和 VWDB 吗？**
+都支持。
 
 FSDB 走转换通道：`prepare_session` 直接吃 `.fsdb`，自动调自带的 `fsdb2fst` 转成 FST，
 不经过 VCD 中间文件，产物与原生 FST 一致，查询工具零改动。转换只需本机有 Verdi 的
 FsdbReader 运行库，**运行时不占 license**，见 [FSDB 波形接入指南](docs/FSDB_GUIDE.md)。
 
-SHM 不在计划内。Cadence Xcelium 用户不用转存量波形，推荐直接从仿真源头产出 FST
+SHM 同样走转换通道：`prepare_session` / `open_wave_view` 直接吃 `.shm` 目录（或其中的
+`.trn` / `.dsn`），调 Xcelium 自带的 `simvisdbutil` 导出临时 VCD，再由 `vcd2fst` 转成 FST，
+临时 VCD 转完即删；也可以用 `convert_shm_to_fst` 按 scope / 信号列表只转一部分，见
+[SHM 波形接入指南](docs/SHM_GUIDE.md)。
+
+Verisium Debug 的 VWDB（`.vwdb` 目录）同理：调 Cadence 自带的 `vwdb2vcd` 导出临时 VCD 再转 FST，
+也可以用 `convert_vwdb_to_fst` 只转一部分，见 [VWDB 波形接入指南](docs/VWDB_GUIDE.md)。
+
+新跑的仿真仍推荐直接从源头产出 FST
 （fstdumper VPI 插件，免 license、零转换），见
 [Xcelium 直出 FST 指南](docs/XCELIUM_FST_GUIDE.md)。
 
@@ -444,10 +508,10 @@ wave-mcp 走 FST + VCD 开源路线，正是为成千上万条波形的并发分
 
 **Q3：支持哪些仿真器？**
 任何能产出 FST 或 VCD 的仿真器：Verilator（`--trace-fst`）、Icarus（`-fst`）、
-Xcelium（[fstdumper 直出 FST](docs/XCELIUM_FST_GUIDE.md)）、VCS（VCD 转换，
+Xcelium（[fstdumper 直出 FST](docs/XCELIUM_FST_GUIDE.md)，存量 SHM / VWDB 走 [simvisdbutil](docs/SHM_GUIDE.md) / [vwdb2vcd](docs/VWDB_GUIDE.md) 转换）、VCS（VCD 转换，
 存量 FSDB 走 [fsdb2fst](docs/FSDB_GUIDE.md)）、Questa（VCD 转换）等。
-wave-mcp 不跑仿真器，只消费你已产出的波形。四种波形接入方式（FST 直读 /
-VCD 自动转换 / FSDB 转换 / Xcelium 直出）的对比与支持状态详见
+wave-mcp 不跑仿真器，只消费你已产出的波形。六种波形接入方式（FST 直读 /
+VCD 自动转换 / FSDB 转换 / Xcelium 直出 / SHM 转换 / VWDB 转换）的对比与支持状态详见
 [仿真器兼容性说明](docs/SIMULATOR_COMPATIBILITY.md)。
 
 **Q4：数据准不准？**
@@ -546,7 +610,7 @@ wave-mcp 项目的主体核心能力（pyslang 静态网表、trace 引擎、MCP
 
 ```
 wave_mcp/
-  server.py              # MCP server，注册全部 37 工具
+  server.py              # MCP server，注册全部 39 工具
   session.py             # WorkSession / 共享数据集资源 / session.json / 三层 definition_name
   runtime/               # identity（唯一哈希入口）/ storage（唯一写盘位置）/ executor / auth / audit / request
   pipeline.py            # prepare_session / prepare_static_session 编排
@@ -559,5 +623,5 @@ deploy/                  # 离线 bundle 构建 + 安装（含 Docker 一键流�
 examples/                # 示例库（见上表）
 tests/                   # 回归套件 run_regression.py
 CHANGELOG.md             # 版本变更记录
-docs/                    # DEPLOY_AIRGAP / SIMULATOR_COMPATIBILITY / FSDB_GUIDE / XCELIUM_FST_GUIDE / THIRD_PARTY / WAVE_VIEWER / VIEWER_SCREENSHOTS
+docs/                    # DEPLOY_AIRGAP / SIMULATOR_COMPATIBILITY / FSDB_GUIDE / SHM_GUIDE / VWDB_GUIDE / XCELIUM_FST_GUIDE / THIRD_PARTY / WAVE_VIEWER / VIEWER_SCREENSHOTS
 ```

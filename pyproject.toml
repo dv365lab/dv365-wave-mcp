@@ -37,9 +37,9 @@ dependencies = [
 # through a standard-library per-module store, no optional accelerator.
 
 [project.urls]
-Homepage = "https://github.com/Tencent/wave-mcp"
-Repository = "https://github.com/Tencent/wave-mcp"
-Issues = "https://github.com/Tencent/wave-mcp/issues"
+Homepage = "https://github.com/dv365lab/dv365-wave-mcp"
+Repository = "https://github.com/dv365lab/dv365-wave-mcp"
+Issues = "https://github.com/dv365lab/dv365-wave-mcp/issues"
 
 [project.scripts]
 wave-mcp = "wave_mcp.cli.main:main"
@@ -58,7 +58,7 @@ include = ["wave_mcp*"]
 "wave_mcp.viewer" = ["web/*.html", "web/*.js"]
 
 [tool.setuptools.data-files]
-"share/doc/wave-mcp" = ["LICENSE", "docs/THIRD_PARTY.md", "docs/PACKAGING_MATERIALS.md", "docs/FSDB_GUIDE.md", "docs/WAVE_VIEWER.md", "docs/WAVE_VIEWER.en.md", "docs/XCELIUM_FST_GUIDE.md", "docs/SIMULATOR_COMPATIBILITY.md", "docs/DEPLOY_AIRGAP.md", "docs/VIEWER_SCREENSHOTS.md"]
+"share/doc/wave-mcp" = ["LICENSE", "docs/THIRD_PARTY.md", "docs/PACKAGING_MATERIALS.md", "docs/FSDB_GUIDE.md", "docs/SHM_GUIDE.md", "docs/SHM_GUIDE.en.md", "docs/VWDB_GUIDE.md", "docs/VWDB_GUIDE.en.md", "docs/WAVE_VIEWER.md", "docs/WAVE_VIEWER.en.md", "docs/XCELIUM_FST_GUIDE.md", "docs/SIMULATOR_COMPATIBILITY.md", "docs/DEPLOY_AIRGAP.md", "docs/VIEWER_SCREENSHOTS.md"]
 "share/doc/wave-mcp/images" = ["docs/images/*.png"]
 "share/doc/wave-mcp/images/viewer" = ["docs/images/viewer/*.png"]
 "share/doc/wave-mcp/licenses" = ["docs/licenses/*"]

@@ -4,6 +4,26 @@ All notable changes to wave-mcp are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### 中文
+
+#### 新增
+
+- 支持 Cadence SHM 波形：`prepare_session`、`open_wave_view`、`wave-view`、`wave-session --vcd` 直接接受 `.shm` 目录（或其中的 `.trn` / `.dsn`），用 Xcelium 自带的 `simvisdbutil` 导出临时 VCD 后经 `vcd2fst` 转成 FST，临时 VCD 转完即删。产物 `<name>.fst` 放在 `.shm` 目录旁并复用，数据库内任一文件变化即重新转换。新增 `convert_shm_to_fst` 工具，支持按 `scopes`（完整层次路径）/ `signals_file` 只转一部分；`simvisdbutil` 以 0 退出但打印 `*F,` / `*E,` 诊断时同样报错。见 `docs/SHM_GUIDE.md`。
+- 支持 Cadence VWDB（Verisium Debug 波形库）：同样的入口直接接受 `.vwdb` 目录、其中任意路径、只含 `*.vwdb` 的 `.shm` 目录（同时含 `.trn` 的混合 `.shm` 仍按 SHM 读），用 `vwdb2vcd` 导出临时 VCD 后经 `vcd2fst` 转 FST。`vwdb2vcd` 在私有临时目录里运行，日志、临时 VCD 用完即删；它只写进日志而退出码为 0 的错误（信号不存在、选不到任何信号）会被识别并报错。位于 `.shm` 目录内的 VWDB，FST 放在 `.shm` 目录旁（`waves.shm/waves_ida.vwdb` → `waves_ida.fst`），不写进仿真器目录。新增 `convert_vwdb_to_fst` 工具。见 `docs/VWDB_GUIDE.md`。
+- 工具总数 37 → 39（`convert_shm_to_fst`、`convert_vwdb_to_fst`）。
+- 新环境变量：`VWDB2VCD_BIN`、`SIMVISDBUTIL_BIN`（指定 `simvisdbutil`，否则在 `PATH`、`$XCELIUM_HOME` / `$XLM_ROOT` / `$CDS_INST_DIR` 的 `tools/bin`、`xrun` 所在目录查找）、`WAVE_MCP_SHM_TMPDIR`（临时 VCD 目录）。
+
+### English
+
+#### Added
+
+- Cadence SHM waveforms: `prepare_session`, `open_wave_view`, `wave-view` and `wave-session --vcd` accept a `.shm` directory (or its `.trn` / `.dsn`). It is exported to a temporary VCD with Xcelium's own `simvisdbutil` and converted with `vcd2fst`; the VCD is deleted afterwards. The resulting `<name>.fst` sits next to the `.shm` directory and is reused until any file of the database changes. New `convert_shm_to_fst` tool converts just some `scopes` (exact hierarchical paths) or a `signals_file`; `*F,` / `*E,` diagnostics are treated as failures even when `simvisdbutil` exits 0. See `docs/SHM_GUIDE.md`.
+- Cadence VWDB (Verisium Debug waveform database): the same entry points accept a `.vwdb` directory, any path inside it, or a `.shm` directory holding only a `*.vwdb` (a hybrid `.shm` that also has `.trn` is still read as SHM). It is exported with `vwdb2vcd` to a temporary VCD and converted with `vcd2fst`. `vwdb2vcd` runs in a private scratch directory whose log and VCD are removed afterwards; errors it only logs while exiting 0 (unknown signal, empty selection) are detected and reported. A VWDB inside a `.shm` directory gets its FST beside that directory (`waves.shm/waves_ida.vwdb` → `waves_ida.fst`), never inside it. New `convert_vwdb_to_fst` tool. See `docs/VWDB_GUIDE.md`.
+- Tool count 37 → 39 (`convert_shm_to_fst`, `convert_vwdb_to_fst`).
+- New environment variables: `VWDB2VCD_BIN`, `SIMVISDBUTIL_BIN` (otherwise searched on `PATH`, in `tools/bin` under `$XCELIUM_HOME` / `$XLM_ROOT` / `$CDS_INST_DIR`, and next to `xrun`) and `WAVE_MCP_SHM_TMPDIR` (temporary VCD directory).
+
 ## [1.1.1] - 2026-10-22
 
 ### 中文
@@ -1033,9 +1053,3 @@ Initial public release: 27 MCP tools for RTL waveform debug over FST plus
 SystemVerilog static analysis (pyslang elaboration), covering hierarchy
 browsing, signal values, driver/load tracing, X-cause tracing and file-level
 queries.
-
-[0.2.2]: https://github.com/Tencent/wave-mcp/releases/tag/v0.2.2
-[0.2.1]: https://github.com/Tencent/wave-mcp/releases/tag/v0.2.1
-[0.2.0]: https://github.com/Tencent/wave-mcp/releases/tag/v0.2.0
-[0.1.1]: https://github.com/Tencent/wave-mcp/releases/tag/v0.1.1
-[0.1.0]: https://github.com/Tencent/wave-mcp/releases/tag/v0.1.0

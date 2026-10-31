@@ -408,6 +408,7 @@ TOOL_SCOPES: Dict[str, str] = {
     "query_defaults_clear": "session-scoped",
     "prepare_session": "path-scoped", "open_static_session": "path-scoped",
     "convert_vcd_to_fst": "path-scoped", "convert_fsdb_to_fst": "path-scoped",
+    "convert_shm_to_fst": "path-scoped", "convert_vwdb_to_fst": "path-scoped",
     "find_instances": "session-scoped", "list_modules": "session-scoped",
     "scope_info": "session-scoped", "list_signals": "session-scoped",
     "signal_info": "session-scoped", "signal_values": "session-scoped",
@@ -870,11 +871,13 @@ def prepare_session(wave_path: str, out_dir: Optional[str] = None,
 
     Takes a waveform file your simulator already produced and leaves an OPEN
     session ready to query:
-        waveform (.fst read directly / .fsdb or .vcd auto-converted) ->
+        waveform (.fst read directly / .fsdb, .shm, .vwdb or .vcd
+        auto-converted) ->
         build session.json -> open session.
 
     This never runs a simulator. Run your sim (xrun / Verilator / etc.) with your
-    own flow first, then point this at the resulting ``.fst``, ``.fsdb`` or ``.vcd``.
+    own flow first, then point this at the resulting ``.fst``, ``.fsdb``,
+    ``.shm``, ``.vwdb`` or ``.vcd``.
 
     A converted FST is kept beside its source as ``<name>.fst`` (FSDB adds
     ``<name>.fst.hier``), and one already there, whether converted by hand
@@ -889,8 +892,11 @@ def prepare_session(wave_path: str, out_dir: Optional[str] = None,
 
     Args:
         wave_path: waveform file to analyze — ``.fst`` (read directly), ``.fsdb``
-            (auto-converted via bundled fsdb2fst) or ``.vcd`` (auto-converted via
-            vcd2fst). This is a file the sim already dumped.
+            (auto-converted via bundled fsdb2fst), ``.shm`` (Cadence SHM
+            database directory or its .trn/.dsn; exported with Xcelium's
+            simvisdbutil, then vcd2fst), ``.vwdb`` (Cadence Verisium waveform
+            database directory; exported with vwdb2vcd, then vcd2fst) or
+            ``.vcd`` (auto-converted via vcd2fst). This is a file the sim already dumped.
         out_dir: where to keep the session (session.json, netlist maps).
             Usually omit it: the session then lands under the wave-mcp session
             root (``$WAVE_MCP_SESSION_ROOT``, default ``~/.wave-mcp/
@@ -909,12 +915,13 @@ def prepare_session(wave_path: str, out_dir: Optional[str] = None,
         defines: extra `+define+NAME[=VAL]` macros for elaboration.
         pack: FST compressor when converting: "fastlz" (fastest), "lz4"
             (balanced) or "zlib" (smallest). Default is the converter's own
-            (fastlz for VCD, lz4 for FSDB). Part of the cache key.
-        scopes: for .fsdb only — convert just the signals whose full path
-            contains any of these substrings (fsdb2fst -l). Use on huge designs;
-            the loader refuses batches above 5M signals.
-        signals_file: for .fsdb only — file listing exact signal paths to
-            convert, one per line (fsdb2fst -L).
+            (fastlz for VCD / SHM / VWDB, lz4 for FSDB). Part of the cache key.
+        scopes: for .fsdb / .shm / .vwdb only. FSDB: convert just the signals
+            whose full path contains any of these substrings (fsdb2fst -l);
+            the loader refuses batches above 5M signals. SHM / VWDB: exact
+            scope paths (e.g. "tb.u_dut"), each exported with all levels below.
+        signals_file: for .fsdb / .shm / .vwdb only — file listing exact
+            signal paths to convert, one per line.
         timeout: optional conversion timeout in seconds. Default (None)
             auto-estimates from the file size (about 3x the expected
             conversion time, capped at 4 hours). Conversions are heartbeat-
@@ -1110,6 +1117,111 @@ def convert_fsdb_to_fst(fsdb_path: str, out_path: Optional[str] = None,
                                    signals_file=signals_file, pack=pack,
                                    timeout=timeout)
     except convert.ConversionError as exc:
+        return {"status": "error", "error": str(exc)}
+
+
+@_tool()
+def convert_shm_to_fst(shm_path: str, out_path: Optional[str] = None,
+                       scopes: Optional[List[str]] = None,
+                       signals_file: Optional[str] = None,
+                       pack: str = "fastlz",
+                       timeout: Optional[float] = None) -> dict[str, Any]:
+    """Convert a Cadence Xcelium / SimVision SHM database to FST.
+
+    ``prepare_session`` and ``open_wave_view`` already convert ``.shm``
+    automatically, so reach for this tool when you want to control the
+    conversion: convert one subtree or a signal list of a large database.
+    Uses Cadence ``simvisdbutil`` (ships with Xcelium, found on PATH,
+    ``$SIMVISDBUTIL_BIN`` or ``$XCELIUM_HOME/tools/bin``) to export a
+    temporary VCD, then vcd2fst; the VCD is deleted afterwards.
+
+    Args:
+        shm_path: the ``.shm`` database directory, or its ``.trn`` / ``.dsn``.
+        out_path: output .fst path. Default: ``<name>.fst`` beside the
+            ``<name>.shm`` directory, the same file ``prepare_session`` and
+            ``open_wave_view`` reuse (overwritten if present); the wave-mcp
+            cache when that directory is not writable or ``scopes`` /
+            ``signals_file`` make it a partial conversion, reported in
+            ``notice``.
+        scopes: exact scope paths to export (e.g. ["tb.u_dut"]), each with
+            every level below it (simvisdbutil -scope <s> all). "/" separators
+            are accepted.
+        signals_file: file with exact signal paths, one per line
+            (simvisdbutil -signal).
+        pack: FST compressor: "fastlz" (fastest, default), "lz4" or "zlib".
+        timeout: optional timeout in seconds for export + conversion; default
+            auto-estimates from the database size.
+
+    Returns the output path, timing (``export_sec`` for the SHM -> VCD step)
+    and sizes, including the size of the deleted intermediate VCD.
+    """
+    if convert.resolve_simvisdbutil() is None:
+        return {"status": "error",
+                "error": str(convert.simvisdbutil_missing_error())}
+    try:
+        if out_path:
+            res = convert.convert_shm(shm_path, out_path, scopes=scopes,
+                                      signals_file=signals_file, pack=pack,
+                                      timeout=timeout)
+            return {"status": "ok", **res.to_dict()}
+        return _default_conversion(shm_path, "shm", scopes=scopes,
+                                   signals_file=signals_file, pack=pack,
+                                   timeout=timeout)
+    except convert.ConversionError as exc:
+        return {"status": "error", "error": str(exc)}
+
+
+@_tool()
+def convert_vwdb_to_fst(vwdb_path: str, out_path: Optional[str] = None,
+                        scopes: Optional[List[str]] = None,
+                        signals_file: Optional[str] = None,
+                        pack: str = "fastlz",
+                        timeout: Optional[float] = None) -> dict[str, Any]:
+    """Convert a Cadence VWDB (Verisium waveform database) to FST.
+
+    ``prepare_session`` and ``open_wave_view`` already convert ``.vwdb``
+    automatically, so reach for this tool when you want to control the
+    conversion: convert one subtree or a signal list of a large database.
+    Uses Cadence ``vwdb2vcd`` (ships with Xcelium / Verisium Debug, found on
+    PATH, ``$VWDB2VCD_BIN`` or ``$XCELIUM_HOME/tools/bin``) to export a
+    temporary VCD, then vcd2fst; the VCD is deleted afterwards.
+
+    Args:
+        vwdb_path: the ``.vwdb`` database directory (or any path inside it,
+            or a ``.shm`` directory holding a single ``*.vwdb`` and no SHM
+            data).
+        out_path: output .fst path. Default: ``<name>.fst`` beside the
+            ``<name>.vwdb`` directory (beside the enclosing ``.shm``
+            directory when the VWDB sits inside one), the same file
+            ``prepare_session`` and ``open_wave_view`` reuse; the wave-mcp
+            cache when that directory is not writable or ``scopes`` /
+            ``signals_file`` make it a partial conversion, reported in
+            ``notice``.
+        scopes: exact scope paths to export (e.g. ["tb.u_dut"]), each with
+            every level below it (vwdb2vcd -scope). "/" separators are
+            accepted.
+        signals_file: file with exact signal paths, one per line
+            (vwdb2vcd -signalListFile; ``#`` comments are stripped here).
+        pack: FST compressor: "fastlz" (fastest, default), "lz4" or "zlib".
+        timeout: optional timeout in seconds for export + conversion; default
+            auto-estimates from the database size.
+
+    Returns the output path, timing (``export_sec`` for the VWDB -> VCD step)
+    and sizes, including the size of the deleted intermediate VCD.
+    """
+    if convert.resolve_vwdb2vcd() is None:
+        return {"status": "error",
+                "error": str(convert.vwdb2vcd_missing_error())}
+    try:
+        if out_path:
+            res = convert.convert_vwdb(vwdb_path, out_path, scopes=scopes,
+                                       signals_file=signals_file, pack=pack,
+                                       timeout=timeout)
+            return {"status": "ok", **res.to_dict()}
+        return _default_conversion(vwdb_path, "vwdb", scopes=scopes,
+                                   signals_file=signals_file, pack=pack,
+                                   timeout=timeout)
+    except (convert.ConversionError, convert.UnsupportedWaveformError) as exc:
         return {"status": "error", "error": str(exc)}
 
 
@@ -2424,8 +2536,8 @@ def open_wave_view(fst_paths: List[str],
 
     Args:
         fst_paths: one waveform (normal view) or two (diff view, e.g.
-            [pass, fail]); at most two. FST is opened directly; VCD and FSDB
-            are converted to FST first and cached, so the same waveform
+            [pass, fail]); at most two. FST is opened directly; VCD, FSDB,
+            SHM and VWDB are converted to FST first and cached, so the same waveform
             converted during analysis is reused here instead of being
             converted again.
         signals: initial signals, each {path, color?, group?, format?, source?}.
@@ -2474,13 +2586,14 @@ def open_wave_view(fst_paths: List[str],
         except _convert.UnsupportedWaveformError as exc:
             return {"status": "error", "error_type": "unsupported_format",
                     "error": str(exc),
-                    "hint": "convert this file to .fst / .vcd / .fsdb first"}
+                    "hint": "convert this file to .fst / .vcd / .fsdb / "
+                            ".shm / .vwdb first"}
         except _convert.ConversionError as exc:
             return {"status": "error", "error_type": "conversion_failed",
                     "error": str(exc),
                     "hint": "conversion to FST failed; check the waveform "
                             "file and converter dependencies (vcd2fst / "
-                            "fsdb2fst)"}
+                            "fsdb2fst / simvisdbutil / vwdb2vcd)"}
         except FileNotFoundError as exc:
             return {"status": "error", "error_type": "file_not_found",
                     "error": str(exc),

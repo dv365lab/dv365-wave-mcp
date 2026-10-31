@@ -8,13 +8,66 @@
 
 English | [简体中文](README.md)
 
+> [!IMPORTANT]
+> ## 🆕 New: Cadence SHM and VWDB waveform support
+>
+> The original project read only FST / VCD / FSDB and stated explicitly that SHM was not supported. **This version adds the following on top of the original project**:
+>
+> | New capability | Details |
+> | --- | --- |
+> | ✅ **SHM waveforms** (Cadence Xcelium / SimVision, a `waves.shm/` directory) | Pass the `.shm` directory, or its `.trn` / `.dsn` file; it is converted to FST automatically |
+> | ✅ **VWDB waveforms** (Cadence Verisium Debug, a `*.vwdb` directory) | Pass the `.vwdb` directory or any path inside it; it is converted to FST automatically. A `.shm` directory that holds only a VWDB is recognised too |
+> | ✅ **New MCP tool `convert_shm_to_fst`** | Control the SHM conversion by hand, including converting just some `scopes` or a `signals_file` |
+> | ✅ **New MCP tool `convert_vwdb_to_fst`** | Control the VWDB conversion by hand, including converting just some `scopes` or a `signals_file` |
+> | ✅ **Every entry point** | `prepare_session`, `open_wave_view`, `wave-view` and `wave-session --vcd` all take `.shm` / `.vwdb` directly |
+> | ✅ **Tool count 37 → 39** | The two conversion tools above |
+>
+> **How it works**: SHM and VWDB are closed Cadence formats, so Cadence's own utilities export a temporary VCD, which `vcd2fst` turns into FST; the VCD is deleted afterwards:
+>
+> ```
+> waves.shm   --simvisdbutil-->  temporary VCD  --vcd2fst-->  waves.fst
+> waves.vwdb  --vwdb2vcd------>  temporary VCD  --vcd2fst-->  waves.fst
+> ```
+>
+> **Usage**:
+>
+> ```python
+> prepare_session(wave_path="sim/waves.shm", filelist_path="rtl.f", top="tb")                  # SHM
+> prepare_session(wave_path="sim/waves.shm/waves_ida.vwdb", filelist_path="rtl.f", top="tb")  # VWDB
+> convert_shm_to_fst(shm_path="sim/waves.shm", scopes=["tb.u_dut"])          # one subtree only
+> convert_vwdb_to_fst(vwdb_path="sim/waves.vwdb", signals_file="sigs.txt")  # a signal list only
+> ```
+>
+> ```bash
+> wave-view sim/waves.shm
+> wave-view sim/waves.vwdb
+> ```
+>
+> **Requirements**:
+>
+> - `simvisdbutil` (reads SHM) and `vwdb2vcd` (reads VWDB), both shipped with Xcelium (`<install>/tools/bin`). They are searched in `$SIMVISDBUTIL_BIN` / `$VWDB2VCD_BIN`, `PATH`, `tools/bin` under `$XCELIUM_HOME` / `$XLM_ROOT` / `$CDS_INST_DIR` / `$VERISIUM_DEBUG_HOME`, and next to `xrun`. When the IDE launches the MCP server, setting `XCELIUM_HOME` in its `env` is usually all it takes.
+> - `vcd2fst` (GTKWave), the same as the existing VCD path.
+> - Optional: `WAVE_MCP_SHM_TMPDIR` sets where the temporary VCD goes (default: next to the output FST; the expanded VCD is usually several times the size of the database).
+>
+> **Behaviour**:
+>
+> - **Output location**: `sim/waves.shm` → `sim/waves.fst`, `sim/waves.vwdb` → `sim/waves.fst`. A VWDB inside a `.shm` directory (e.g. `waves.shm/waves_ida.vwdb`) gets its FST **beside** that directory (`waves_ida.fst`), never inside the simulator's directory.
+> - **Reuse and refresh**: the same rules as VCD / FSDB. A converted FST is reused; after a re-simulation changes the database files it is converted again. Partial conversions and unwritable directories go to the cache directory, and the reply says why.
+> - **Hybrid SHM / VWDB directories**: a `.shm` directory holding both `.trn` and `*.vwdb` is read as SHM; to read the VWDB, pass the `*.vwdb` inside it.
+> - **Errors are not swallowed**: `simvisdbutil` / `vwdb2vcd` can exit 0 when a signal or scope does not exist. This version detects their `*F,` / `*E,` diagnostics and log messages, and an export that selected no signals, and reports an error instead of producing an FST with missing signals.
+> - For SHM / VWDB, `scopes` are **exact hierarchical paths** (e.g. `tb.u_dut`; `/` is turned into `.`), not substring matches as with FSDB.
+>
+> **Validation**: end-to-end on a local Xcelium 26.03 with SHM and VWDB from real simulations (conversion, reuse, session build, queries, partial conversion, error detection). New unit tests `tests/unit/test_shm.py` and `tests/unit/test_vwdb.py` use stand-in scripts to cover the conversion flow on machines without Xcelium.
+>
+> **Docs**: [SHM guide](docs/SHM_GUIDE.en.md) · [VWDB guide](docs/VWDB_GUIDE.en.md) · see the `[Unreleased]` section of [CHANGELOG.md](CHANGELOG.md).
+
 **wave-mcp is an open-source RTL waveform debug MCP server from the Penglai Lab verification team
 at Tencent**, a debugging toolkit for LLMs: it reads **FST waveforms + an RTL netlist** and
-provides **37 MCP tools** for hierarchy exploration, signal queries, driver analysis, waveform diff, a browser wave viewer, and
+provides **39 MCP tools** for hierarchy exploration, signal queries, driver analysis, waveform diff, a browser wave viewer, and
 value/X tracing. **Apache-2.0 licensed, no commercial license required, unlimited concurrency.**
 
-> **Direct FST reads; VCD / FSDB convert automatically.** Verilator `--trace-fst` and Icarus
-> emit FST, which wave-mcp reads directly. If all you have is VCD or FSDB, `prepare_session`
+> **Direct FST reads; VCD / FSDB / SHM / VWDB convert automatically.** Verilator `--trace-fst` and Icarus
+> emit FST, which wave-mcp reads directly. If all you have is VCD, FSDB or a Cadence SHM / VWDB, `prepare_session`
 > converts it and then opens the session (FSDB conversion checks out no Verdi license).
 > It **does not run a simulator**: you produce the waveform with your own flow and hand the
 > result to it.
@@ -45,7 +98,7 @@ XiangShan added to the test set:
 | Tool calls | 3.1 million+ calls all passed |
 | Driver analysis | drivers / fan-in / connectivity / tracing fully validated on production projects |
 | Huge modules | **million-scale scopes analyzed stably** |
-| Tool coverage | all 37 tools validated, including unit and browser e2e coverage for viewer / diff |
+| Tool coverage | all 39 tools validated, including unit and browser e2e coverage for viewer / diff |
 
 ![Tool call distribution](docs/images/tool-calls-distribution.png)
 
@@ -141,7 +194,7 @@ Or call the `prepare_session` MCP tool directly from your Code Agent (see below)
 
 ## CLI queries (`wave-mcp query`)
 
-All 37 tools are also callable from the terminal, without an agent:
+All 39 tools are also callable from the terminal, without an agent:
 
 ```bash
 wave-mcp query --list                            # list every tool
@@ -308,15 +361,15 @@ wave-session --vcd sim/dump.vcd --top top_tb --filelist rtl.f
 > No manual conversion needed when using the MCP tools: `prepare_session` auto-converts when
 > given a `.vcd` (path 1 above).
 
-**Where the converted FST goes**: next to the source waveform, same name with the `.fst` extension (`sim/dump.vcd` → `sim/dump.fst`; FSDB adds `dump.fst.hier`). An FST already there, whether you converted it by hand or an earlier call did, is reused as long as it is not older than the source; a stale or unreadable one is overwritten. Three cases use `~/.wave-mcp/cache/fst/` instead (honouring `WAVE_MCP_CACHE_ROOT`), and the reply says why and where: the source directory is not writable, the conversion is partial (`scopes` / `signals_file`, which must not take the full waveform's name), or the directory is still unwritable and the cached copy is reused.
+**Where the converted FST goes**: next to the source waveform, same name with the `.fst` extension (`sim/dump.vcd` → `sim/dump.fst`; FSDB adds `dump.fst.hier`; an SHM directory `sim/waves.shm` → `sim/waves.fst`; a VWDB directory `sim/waves.vwdb` → `sim/waves.fst`). An FST already there, whether you converted it by hand or an earlier call did, is reused as long as it is not older than the source; a stale or unreadable one is overwritten. Three cases use `~/.wave-mcp/cache/fst/` instead (honouring `WAVE_MCP_CACHE_ROOT`), and the reply says why and where: the source directory is not writable, the conversion is partial (`scopes` / `signals_file`, which must not take the full waveform's name), or the directory is still unwritable and the cached copy is reused.
 
 ---
 
-## Tools (37, in 12 categories)
+## Tools (39, in 12 categories)
 
 | Category | Tools | Notes |
 | --- | --- | --- |
-| Waveform prep | `prepare_session` / `open_static_session` / `convert_vcd_to_fst` / `convert_fsdb_to_fst` | waveform → session in one shot (`.fst` / `.fsdb` / `.vcd` auto-detected, converted FST kept next to the source and reused); static analysis needs no waveform; never runs a simulator |
+| Waveform prep | `prepare_session` / `open_static_session` / `convert_vcd_to_fst` / `convert_fsdb_to_fst` / `convert_shm_to_fst` / `convert_vwdb_to_fst` | waveform → session in one shot (`.fst` / `.fsdb` / `.shm` / `.vwdb` / `.vcd` auto-detected, converted FST kept next to the source and reused); static analysis needs no waveform; never runs a simulator |
 | Session mgmt | `open_session` / `close_session` / `session_info` | `session_info` includes netlist_health + definition_coverage |
 | Query defaults | `query_defaults_set` / `query_defaults_get` / `query_defaults_clear` | per-session default signals + time window; an explicit argument always wins, a reply that drew a default lists the inherited fields in `_query.from_defaults`; pin a `defaults_revision` and a moved default answers `defaults_conflict` |
 | Hierarchy | `find_instances` / `list_modules` / `scope_info` | three-layer module-def resolution: netlist → name inference → scope_map |
@@ -347,13 +400,13 @@ wave-view dump.fst --signals top.u_dma.req_valid --cursor 1523400ps
 # dual-waveform compare view (two panes, agent-set zoom/cursor injected into both)
 wave-view pass.fst fail.fst --labels pass fail
 
-# pass a VCD / FSDB directly: converted to FST, then opened
+# pass a VCD / FSDB / SHM / VWDB directly: converted to FST, then opened
 wave-view sim.vcd
 ```
 
 - The CLI prints a URL; desktops auto-open a browser, and in SSH / code-agent
   sessions the IDE terminal auto-forwards the localhost port.
-- Waveform formats: `.fst` opens directly, `.vcd` / `.fsdb` are converted to
+- Waveform formats: `.fst` opens directly, `.vcd` / `.fsdb` / `.shm` / `.vwdb` are converted to
   FST automatically. The converted FST sits next to the source and is shared
   with `prepare_session`, so the same waveform is converted once whether you
   analyse it first or view it first, and one you converted by hand is used as is. Other formats are rejected at the entry point with
@@ -465,6 +518,9 @@ inherit your interactive shell's environment.
 | `FSDB2FST_BIN` | no | Use a prebuilt `fsdb2fst` binary | empty. Auto-detected, built on demand at first conversion |
 | `WAVE_MCP_FSDB2FST_AUTOBUILD` | no | Set to `0` to disable the first-run auto build | `1` (enabled) |
 | `VCD2FST_BIN` | no | Path to the GTKWave `vcd2fst` executable | `vcd2fst` (found via `PATH`) |
+| `XCELIUM_HOME` / `SIMVISDBUTIL_BIN` | for `.shm` when `simvisdbutil` is not on `PATH` | Xcelium installation root (`simvisdbutil` is looked up in its `tools/bin`), or the `simvisdbutil` binary itself; see the [SHM guide](docs/SHM_GUIDE.en.md) | empty. Searched on `PATH`, `$XLM_ROOT` / `$CDS_INST_DIR`, next to `xrun` |
+| `VWDB2VCD_BIN` | for `.vwdb` when `vwdb2vcd` is not on `PATH` (or set `XCELIUM_HOME`) | The `vwdb2vcd` binary; see the [VWDB guide](docs/VWDB_GUIDE.en.md) | empty. Searched like `simvisdbutil`, plus `$VERISIUM_DEBUG_HOME` |
+| `WAVE_MCP_SHM_TMPDIR` | no | Where the temporary VCD of an SHM / VWDB conversion is written (deleted afterwards) | empty. Next to the output FST |
 | `WAVE_MCP_VIEWER_ASSETS` | no | Viewer asset directory (must contain `surver` and `wasm/index.html`); the offline bundle sets this for you | empty. Falls back to the pip assets package, then `~/.wave-mcp/cache/viewer/` |
 | `WAVE_MCP_MAX_VIEWS` | no | Cap on concurrent views, closing the oldest past the cap; `0` removes the cap | `8` |
 | `WAVE_MCP_WORKERS` | no | Tool calls executing at once; the rest wait in a queue | `4` |
@@ -497,8 +553,8 @@ an explicit `out_dir` are never touched.
 
 ## FAQ
 
-**Q1: Does it support FSDB / SHM?**
-FSDB yes, SHM no.
+**Q1: Does it support FSDB / SHM / VWDB?**
+All three.
 
 FSDB goes through the conversion path: `prepare_session` takes `.fsdb` directly and calls the
 bundled `fsdb2fst` to write FST, with no VCD intermediate. The result is identical to a native
@@ -506,9 +562,15 @@ FST file, so every query tool works unchanged. Conversion only needs Verdi's Fsd
 on your own machine and **checks out no license at runtime**, see the
 [FSDB guide](docs/FSDB_GUIDE.md).
 
-SHM is not planned. Cadence Xcelium users do not need to convert existing waveforms: dump FST
-straight from the simulator instead (the fstdumper VPI plugin, license-free, zero conversion),
-see the [Xcelium FST guide](docs/XCELIUM_FST_GUIDE.md).
+SHM goes through a conversion path too: `prepare_session` / `open_wave_view` take a `.shm`
+directory (or its `.trn` / `.dsn`) directly, export it to a temporary VCD with Xcelium's own
+`simvisdbutil`, and convert that with `vcd2fst`; the VCD is deleted afterwards.
+`convert_shm_to_fst` converts just some scopes or a signal list, see the
+[SHM guide](docs/SHM_GUIDE.en.md). Verisium Debug's VWDB (a `.vwdb` directory) works the same way
+through Cadence's `vwdb2vcd`, with `convert_vwdb_to_fst` for partial conversions, see the
+[VWDB guide](docs/VWDB_GUIDE.en.md). For new simulations, dumping FST straight from the simulator is
+still the better route (the fstdumper VPI plugin, license-free, zero conversion), see the
+[Xcelium FST guide](docs/XCELIUM_FST_GUIDE.md).
 
 **Q2: Do I need a commercial license?**
 No. Apache-2.0 licensed, unlimited concurrency, unlimited machines. This is the core difference from
@@ -522,11 +584,11 @@ to serve thousands of concurrent waveform analyses with a high-performance open-
 
 **Q3: Which simulators are supported?**
 Any simulator that produces FST or VCD: Verilator (`--trace-fst`), Icarus (`-fst`),
-Xcelium ([FST via fstdumper](docs/XCELIUM_FST_GUIDE.md)), VCS (VCD conversion; existing
+Xcelium ([FST via fstdumper](docs/XCELIUM_FST_GUIDE.md); existing SHM / VWDB via [simvisdbutil](docs/SHM_GUIDE.en.md) / [vwdb2vcd](docs/VWDB_GUIDE.en.md)), VCS (VCD conversion; existing
 FSDB via [fsdb2fst](docs/FSDB_GUIDE.md)), Questa (VCD conversion), etc.
 wave-mcp never runs a simulator; it consumes the waveform you already produced.
-See [simulator compatibility](docs/SIMULATOR_COMPATIBILITY.md) for the four intake paths
-(direct FST / auto VCD conversion / FSDB conversion / Xcelium direct dump) and their
+See [simulator compatibility](docs/SIMULATOR_COMPATIBILITY.md) for the six intake paths
+(direct FST / auto VCD conversion / FSDB conversion / Xcelium direct dump / SHM conversion / VWDB conversion) and their
 validation status.
 
 **Q4: Is the data accurate?**
@@ -653,7 +715,7 @@ See [`docs/THIRD_PARTY.md`](docs/THIRD_PARTY.md).
 
 ```
 wave_mcp/
-  server.py              # MCP server, registers all 37 tools
+  server.py              # MCP server, registers all 39 tools
   runtime/               # identity (the only hashing), storage (the only write locations), executor, auth, audit, request
   session.py             # WorkSession / shared dataset resources / session.json / definition_name
   pipeline.py            # prepare_session / prepare_static_session orchestration
@@ -666,5 +728,5 @@ deploy/                  # offline bundle build + install (incl. Docker one-shot
 examples/                # example library (see table above)
 tests/                   # regression entry run_regression.py
 CHANGELOG.md             # release notes
-docs/                    # DEPLOY_AIRGAP / SIMULATOR_COMPATIBILITY / FSDB_GUIDE / XCELIUM_FST_GUIDE / THIRD_PARTY / WAVE_VIEWER / VIEWER_SCREENSHOTS
+docs/                    # DEPLOY_AIRGAP / SIMULATOR_COMPATIBILITY / FSDB_GUIDE / SHM_GUIDE / VWDB_GUIDE / XCELIUM_FST_GUIDE / THIRD_PARTY / WAVE_VIEWER / VIEWER_SCREENSHOTS
 ```

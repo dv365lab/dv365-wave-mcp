@@ -327,7 +327,7 @@ def _stage_schema() -> None:
     print("== MCP schema accepts both a string and a list ==")
     import asyncio
     tools = {t.name: t for t in asyncio.run(srv.mcp.list_tools())}
-    check("tool count is 37", len(tools) == 37, str(len(tools)))
+    check("tool count is 39", len(tools) == 39, str(len(tools)))
     for name in ("signal_values", "signal_activity"):
         prop = tools[name].input_schema["properties"]["paths"]
         # A plain List[str] annotation makes the SDK reject a bare string over

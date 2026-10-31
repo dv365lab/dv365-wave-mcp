@@ -150,7 +150,7 @@ def main(argv=None):
     convert.install_exit_handlers()
     p = argparse.ArgumentParser(description="Build a wave-mcp session directory")
     p.add_argument("--fst", help="FST waveform path (or use --vcd to convert)")
-    p.add_argument("--vcd", help="waveform to convert to FST (.vcd / .fsdb); "
+    p.add_argument("--vcd", help="waveform to convert to FST (.vcd / .fsdb / .shm / .vwdb); "
                                 "conversion is cached and shared with "
                                 "prepare_session and the viewer")
     p.add_argument("--pack", choices=["fastlz", "lz4", "zlib"], default=None,

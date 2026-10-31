@@ -152,9 +152,7 @@ if [[ "$SLIM" = "1" ]]; then
   MATERIALS_LINE="Packaging removes upstream service workers and sample waveforms. This slim
 variant carries the dependency notices and inventories under redistribution/;
 the corresponding source archives are distributed with the full material
-wheel attached to the wave-mcp GitHub release:
-
-  https://github.com/Tencent/wave-mcp/releases"
+wheel attached to the wave-mcp release."
 else
   MATERIALS_LINE="Packaging removes upstream service workers and sample waveforms. Exact
 source archives, dependency notices and build evidence accompany the assets
@@ -268,7 +266,7 @@ manifest['files'] = {name: digest
 manifest.setdefault('advisory_notes', []).append(
     'Slim packaging: sources/ is not embedded in this wheel. The source '
     'archives ship in the full material wheel attached to the wave-mcp '
-    'GitHub release (https://github.com/Tencent/wave-mcp/releases).')
+    'release.')
 path.write_text(json.dumps(manifest, indent=1) + '\n')
 PYEOF
 fi
