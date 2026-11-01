@@ -4,6 +4,7 @@
 <img src="docs/images/penglai-logo.png" alt="蓬莱实验室" width="200"/>
 <img src="docs/images/dv365-logo.png" alt="DV365" width="125"/>
 <img src="docs/images/dv365-wechat-qr.jpg" alt="公众号《芯片验证日记》二维码" width="125"/>
+<img src="docs/images/zhishixingqiu.jpg" alt="知识星球《数字芯片验证》二维码" width="300"/>
 </p>
 
 [![PyPI version](https://img.shields.io/pypi/v/wave-mcp)](https://pypi.org/project/wave-mcp/)
