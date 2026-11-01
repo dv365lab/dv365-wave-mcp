@@ -1,6 +1,8 @@
 # wave-mcp：开源、免 License 的 RTL 波形调试 MCP Server
 
 <img src="docs/images/penglai-logo.png" alt="蓬莱实验室" width="200"/>
+<img src="docs/images/dv365-logo.png" alt="DV365" width="125"/>
+<img src="docs/images/dv365-wechat-qr.jpg" alt="公众号《芯片验证日记》二维码" width="125"/>
 
 [![PyPI version](https://img.shields.io/pypi/v/wave-mcp)](https://pypi.org/project/wave-mcp/)
 [![Python versions](https://img.shields.io/pypi/pyversions/wave-mcp)](https://pypi.org/project/wave-mcp/)
