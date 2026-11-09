@@ -177,6 +177,16 @@ python -m wave_mcp.server --session sessions/my_module
 
 或者在你的 Code Agent 里直接用 MCP 工具 `prepare_session`，见下文集成示例。
 
+## Agent Skill（Claude Code / Codex / 其他 Agent）
+
+项目提供通用的 [`wave-mcp` 技能](skills/wave-mcp/SKILL.md)，可通过 CLI 使用波形与 RTL 分析，也可复用已有 MCP 连接。
+
+```bash
+python deploy/build_skill.py
+```
+
+生成的 `dist/skills/wave-mcp-<版本>.zip` / `.skill` 包含技能说明、运行脚本和本仓库源码快照。解压后放入 Claude Code 的 `.claude/skills/` 或 Codex 的 `.agents/skills/`，再安装技能运行环境。完整步骤、平台要求与调用示例见 [Agent Skill 使用指南](docs/AGENT_SKILL.md)。
+
 ## CLI 模式
 
 不挂 Code Agent 时，也能在终端直接调用全部 39 个工具（与 MCP 同名同参数）：

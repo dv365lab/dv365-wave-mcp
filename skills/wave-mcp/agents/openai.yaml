@@ -1,0 +1,4 @@
+interface:
+  display_name: "wave-mcp RTL Debug"
+  short_description: "Debug RTL waveforms and inspect SystemVerilog designs"
+  default_prompt: "Use $wave-mcp to investigate my RTL waveform or SystemVerilog design and report the evidence for the root cause."

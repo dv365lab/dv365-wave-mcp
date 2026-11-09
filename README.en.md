@@ -1,3 +1,11 @@
+> **本文件由《芯片验证日记》整理分享，仅供学习交流使用。**
+>
+> - 公众号 / 视频号：**芯片验证日记**
+> - 知识星球：**7833526** —— 一年 365 天答疑，为您的工作和学习保驾护航！
+> - 已成功指导 **200+** 位芯片同行求职上岸、收获满意 Offer；提供**求职套餐 / 职业规划**服务，欢迎微信：DV365-DV_Daily。
+
+---
+
 # wave-mcp: Open-source, license-free MCP server for RTL waveform debug
 
 <img src="docs/images/penglai-logo.png" alt="Penglai Lab" width="200"/>
@@ -191,6 +199,16 @@ python -m wave_mcp.server --session sessions/my_module
 ```
 
 Or call the `prepare_session` MCP tool directly from your Code Agent (see below).
+
+## Agent Skill (Claude Code / Codex / other agents)
+
+The portable [`wave-mcp` skill](skills/wave-mcp/SKILL.md) uses the existing CLI and can also reuse a connected MCP server.
+
+```bash
+python deploy/build_skill.py
+```
+
+The resulting `dist/skills/wave-mcp-<version>.zip` / `.skill` includes instructions, runtime helpers, and this repository's source snapshot. Extract the skill into `.claude/skills/` for Claude Code or `.agents/skills/` for Codex, then run its `scripts/setup_runtime.py`. Python dependencies and optional converters are installed separately; Linux x86_64 is recommended. See the [installation guide](docs/AGENT_SKILL.md) and the skill's [runtime setup reference](skills/wave-mcp/references/setup.md).
 
 ## CLI queries (`wave-mcp query`)
 

@@ -1,3 +1,11 @@
+> **本文件由《芯片验证日记》整理分享，仅供学习交流使用。**
+>
+> - 公众号 / 视频号：**芯片验证日记**
+> - 知识星球：**7833526** —— 一年 365 天答疑，为您的工作和学习保驾护航！
+> - 已成功指导 **200+** 位芯片同行求职上岸、收获满意 Offer；提供**求职套餐 / 职业规划**服务，欢迎微信：DV365-DV_Daily。
+
+---
+
 # Changelog
 
 All notable changes to wave-mcp are documented here. Format follows
